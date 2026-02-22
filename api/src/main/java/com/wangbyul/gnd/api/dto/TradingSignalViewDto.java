@@ -80,6 +80,24 @@ public class TradingSignalViewDto {
     @JsonProperty("reason_json")
     private String reasonJson;
 
+    @JsonProperty("universe_layer")
+    private String universeLayer;
+
+    @JsonProperty("selection_reason")
+    private String selectionReason;
+
+    @JsonProperty("dedup_applied")
+    private Boolean dedupApplied;
+
+    @JsonProperty("diversity_score")
+    private BigDecimal diversityScore;
+
+    @JsonProperty("core_theme_filter_applied")
+    private Boolean coreThemeFilterApplied;
+
+    @JsonProperty("theme_code")
+    private String themeCode;
+
     @JsonProperty("generated_at")
     private OffsetDateTime generatedAt;
 }

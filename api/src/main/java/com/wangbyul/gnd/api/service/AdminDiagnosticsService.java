@@ -338,6 +338,10 @@ public class AdminDiagnosticsService {
         data.put("top_repeated_families", repeated);
         data.put("diversity_warning", concentration.compareTo(BigDecimal.valueOf(0.45d)) > 0);
         data.put("minimum_rules", base.get("minimum_rules"));
+        data.put("assets_by_layer", base.getOrDefault("assets_by_layer", Map.of()));
+        data.put("assets_by_theme_code", base.getOrDefault("assets_by_theme_code", Map.of()));
+        data.put("priority_theme_assets", base.getOrDefault("priority_theme_assets", 0));
+        data.put("stale_quote_assets", base.getOrDefault("stale_quote_assets", 0));
         return data;
     }
 

@@ -154,7 +154,13 @@ public class InsightController {
         List<TradingSignalViewDto> data = tradingSignalEngineService.getScalpSignals(country, theme, limit);
         return ApiEnvelope.<List<TradingSignalViewDto>>builder()
                 .data(data)
-                .meta(Map.of("country", country, "theme", theme == null ? "" : theme, "limit", limit, "panel", "scalp"))
+                .meta(Map.of(
+                        "country", country,
+                        "theme", theme == null ? "" : theme,
+                        "theme_code", tradingSignalEngineService.normalizeThemeForApi(theme),
+                        "limit", limit,
+                        "panel", "scalp",
+                        "selection_policy", "universe-dedup-v2"))
                 .traceId(traceId())
                 .build();
     }
@@ -170,7 +176,13 @@ public class InsightController {
         List<TradingSignalViewDto> data = tradingSignalEngineService.getSwingSignals(country, theme, limit);
         return ApiEnvelope.<List<TradingSignalViewDto>>builder()
                 .data(data)
-                .meta(Map.of("country", country, "theme", theme == null ? "" : theme, "limit", limit, "panel", "swing"))
+                .meta(Map.of(
+                        "country", country,
+                        "theme", theme == null ? "" : theme,
+                        "theme_code", tradingSignalEngineService.normalizeThemeForApi(theme),
+                        "limit", limit,
+                        "panel", "swing",
+                        "selection_policy", "universe-dedup-v2"))
                 .traceId(traceId())
                 .build();
     }
@@ -201,7 +213,14 @@ public class InsightController {
         List<TradingSignalViewDto> data = tradingSignalEngineService.getDiscoverySignals(country, theme, limit);
         return ApiEnvelope.<List<TradingSignalViewDto>>builder()
                 .data(data)
-                .meta(Map.of("country", country, "theme", theme == null ? "" : theme, "period", period, "limit", limit, "panel", "discovery"))
+                .meta(Map.of(
+                        "country", country,
+                        "theme", theme == null ? "" : theme,
+                        "theme_code", tradingSignalEngineService.normalizeThemeForApi(theme),
+                        "period", period,
+                        "limit", limit,
+                        "panel", "discovery",
+                        "selection_policy", "universe-dedup-v2"))
                 .traceId(traceId())
                 .build();
     }

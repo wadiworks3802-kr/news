@@ -3,6 +3,7 @@ package com.wangbyul.gnd.core.repository;
 import com.wangbyul.gnd.core.domain.NewsAssetLinkEntity;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 /**
@@ -14,6 +15,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface NewsAssetLinkRepository extends JpaRepository<NewsAssetLinkEntity, Long> {
 
     List<NewsAssetLinkEntity> findTop200ByAssetCodeOrderByCreatedAtDesc(String assetCode);
+
+    Optional<NewsAssetLinkEntity> findTop1ByAssetCodeOrderByCreatedAtDesc(String assetCode);
 
     List<NewsAssetLinkEntity> findTop200ByNewsIdOrderByConfidenceDesc(String newsId);
 

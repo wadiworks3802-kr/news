@@ -126,6 +126,8 @@ public class MarketDataCollectionService {
 
     private CollectionRunResult runQuoteCollection(List<AssetUniverseEntity> assets, String triggeredBy) {
         String traceId = traceId();
+        Map<String, AssetUniverseEntity> assetMap = assets.stream()
+                .collect(java.util.stream.Collectors.toMap(AssetUniverseEntity::getAssetCode, a -> a, (a, b) -> a));
         MarketProviderJobEntity job = beginJob(
                 providerRouter.activeProviderId(),
                 "market-quote-collection",
@@ -152,6 +154,12 @@ public class MarketDataCollectionService {
                     continue;
                 }
                 marketQuoteSnapshotRepository.save(entityOpt.get());
+                AssetUniverseEntity asset = assetMap.get(entityOpt.get().getAssetCode());
+                if (asset != null) {
+                    asset.setLastQuoteReceivedAt(entityOpt.get().getQuoteTimeUtc() != null
+                            ? entityOpt.get().getQuoteTimeUtc()
+                            : entityOpt.get().getSnapshotUtc());
+                }
                 success++;
             }
         } else if (!assets.isEmpty()) {
@@ -159,6 +167,9 @@ public class MarketDataCollectionService {
         }
 
         finishJob(job, exec, assets.size(), processed, success, failed);
+        if (!assetMap.isEmpty()) {
+            assetUniverseRepository.saveAll(assetMap.values());
+        }
         return resultOf(job, exec);
     }
 

@@ -22,20 +22,27 @@ import com.wangbyul.gnd.core.domain.SignalActionType;
 import com.wangbyul.gnd.core.domain.StrategyRunEntity;
 import com.wangbyul.gnd.core.domain.StrategyRunType;
 import com.wangbyul.gnd.core.domain.TradingSignalEntity;
+import com.wangbyul.gnd.core.domain.UniverseLayerType;
 import com.wangbyul.gnd.core.repository.AssetUniverseRepository;
 import com.wangbyul.gnd.core.repository.StrategyRunRepository;
 import com.wangbyul.gnd.core.repository.TradingSignalRepository;
+import java.math.MathContext;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import org.slf4j.MDC;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -66,6 +73,18 @@ public class TradingSignalEngineService {
     private final ObjectMapper objectMapper;
     private final SignalPolicyProperties signalPolicyProperties;
     private final SystemFeatureToggleService systemFeatureToggleService;
+
+    @Value("${app.universe.panel-max-same-family:1}")
+    private int panelMaxSameFamily;
+
+    @Value("${app.universe.panel-max-same-theme:2}")
+    private int panelMaxSameTheme;
+
+    @Value("${app.universe.panel-candidate-fetch-multiplier:8}")
+    private int panelCandidateFetchMultiplier;
+
+    @Value("${app.universe.priority-themes:RESOURCE,DEFENSE,SPACE,AI,SEMICONDUCTOR,ROBOTICS,ENERGY}")
+    private List<String> priorityThemes;
 
     public TradingSignalEngineService(
             AssetUniverseRepository assetUniverseRepository,
@@ -179,39 +198,34 @@ public class TradingSignalEngineService {
     public List<TradingSignalViewDto> getScalpSignals(String country, String theme, int limit) {
         ensureRecentSignals(country, theme, Math.max(limit, 20), StrategyRunType.SCALP);
         List<SignalActionType> actions = List.of(SignalActionType.BUY_CANDIDATE, SignalActionType.SELL_CANDIDATE, SignalActionType.WATCH);
-        return queryByActions(country, theme, actions, limit);
+        return queryPanelSignals(country, theme, actions, limit, PanelType.SCALP, "1h");
     }
 
     public List<TradingSignalViewDto> getSwingSignals(String country, String theme, int limit) {
         ensureRecentSignals(country, theme, Math.max(limit, 20), StrategyRunType.SWING);
         List<SignalActionType> actions = List.of(SignalActionType.BUY_CANDIDATE, SignalActionType.SELL_CANDIDATE, SignalActionType.HOLD, SignalActionType.WATCH);
-        return queryByActions(country, theme, actions, limit);
+        return queryPanelSignals(country, theme, actions, limit, PanelType.SWING, "1w");
     }
 
     public TradingSignalViewDto getPositionSignal(String assetCode) {
-        tradingSignalRepository.findTop1ByAssetCodeOrderByGeneratedAtDesc(assetCode)
+        tradingSignalRepository.findTop1ByAssetCodeAndSignalWindowOrderByGeneratedAtDesc(assetCode, "1m")
                 .orElseGet(() -> {
                     AssetUniverseEntity asset = assetUniverseRepository.findById(assetCode)
                             .orElseThrow(() -> new IllegalArgumentException("asset not found: " + assetCode));
                     return computeAndSave(asset, StrategyRunType.POSITION);
                 });
-        TradingSignalEntity signal = tradingSignalRepository.findTop1ByAssetCodeOrderByGeneratedAtDesc(assetCode)
+        TradingSignalEntity signal = tradingSignalRepository.findTop1ByAssetCodeAndSignalWindowOrderByGeneratedAtDesc(assetCode, "1m")
+                .or(() -> tradingSignalRepository.findTop1ByAssetCodeOrderByGeneratedAtDesc(assetCode))
                 .orElseThrow(() -> new IllegalArgumentException("signal not found: " + assetCode));
-        return toViewDto(signal);
+        AssetUniverseEntity asset = assetUniverseRepository.findById(signal.getAssetCode()).orElse(null);
+        return toViewDto(signal, asset, PanelSelectionMeta.forPosition());
     }
 
     public List<TradingSignalViewDto> getDiscoverySignals(String country, String theme, int limit) {
         ensureRecentSignals(country, theme, Math.max(limit, 30), StrategyRunType.DISCOVERY);
-        return tradingSignalRepository.findByCountryAndGeneratedAtAfterOrderByGeneratedAtDesc(
-                        country,
-                        OffsetDateTime.now().minusHours(6),
-                        PageRequest.of(0, 200))
-                .stream()
-                .filter(signal -> theme == null || theme.isBlank() || Objects.equals(theme, signal.getTheme()))
-                .sorted(Comparator.comparing(TradingSignalEntity::getDiscoveryScore).reversed())
-                .limit(limit)
-                .map(this::toViewDto)
-                .toList();
+        List<SignalActionType> actions = List.of(
+                SignalActionType.BUY_CANDIDATE, SignalActionType.WATCH, SignalActionType.HOLD, SignalActionType.SELL_CANDIDATE);
+        return queryPanelSignals(country, theme, actions, limit, PanelType.DISCOVERY, "6m");
     }
 
     public WeeklyContextDto getWeeklyContext(String assetCode) {
@@ -270,6 +284,14 @@ public class TradingSignalEngineService {
                 .build();
     }
 
+    /**
+     * API 메타에서 사용하는 테마 코드 정규화 결과를 노출한다.
+     * 기존 응답 호환을 위해 필수 로직에는 영향 주지 않고 메타/진단 용도로만 사용한다.
+     */
+    public String normalizeThemeForApi(String theme) {
+        return normalizeThemeCode(theme);
+    }
+
     private List<AssetUniverseEntity> resolveAssets(String country, String theme, int limit) {
         List<AssetUniverseEntity> assets;
         if (theme == null || theme.isBlank()) {
@@ -278,22 +300,34 @@ public class TradingSignalEngineService {
                 assets = assetUniverseRepository.findTop200ByCountryAndActiveTrueOrderByUpdatedAtDesc(country);
             }
         } else {
+            String normalizedThemeCode = normalizeThemeCode(theme);
             assets = assetUniverseRepository.findByCountryAndThemeAndActiveTrueOrderByDisplayWeightDescSelectionScoreDescUpdatedAtDesc(
                     country,
                     theme);
             if (assets.isEmpty()) {
+                assets = assetUniverseRepository.findByCountryAndThemeCodeAndActiveTrueOrderByDisplayWeightDescSelectionScoreDescUpdatedAtDesc(
+                        country,
+                        normalizedThemeCode);
+            }
+            if (assets.isEmpty()) {
                 assets = assetUniverseRepository.findTop200ByCountryAndThemeAndActiveTrueOrderByUpdatedAtDesc(country, theme);
+            }
+            if (assets.isEmpty()) {
+                assets = assetUniverseRepository.findTop200ByCountryAndThemeCodeAndActiveTrueOrderByUpdatedAtDesc(country, normalizedThemeCode);
             }
         }
         return assets.stream().limit(Math.max(1, limit)).toList();
     }
 
     private void ensureRecentSignals(String country, String theme, int limit, StrategyRunType runType) {
+        String signalWindow = resolveSignalWindow(runType);
         List<TradingSignalEntity> existing = tradingSignalRepository.findByCountryAndGeneratedAtAfterOrderByGeneratedAtDesc(
                 country,
                 OffsetDateTime.now().minusMinutes(20),
                 PageRequest.of(0, 10));
-        boolean exists = existing.stream().anyMatch(signal -> theme == null || theme.isBlank() || Objects.equals(theme, signal.getTheme()));
+        boolean exists = existing.stream()
+                .filter(signal -> Objects.equals(signalWindow, signal.getSignalWindow()))
+                .anyMatch(signal -> theme == null || theme.isBlank() || matchesThemeFilter(theme, signal, null));
         if (!exists) {
             generateSignals(country, theme, limit, runType);
         }
@@ -362,6 +396,11 @@ public class TradingSignalEngineService {
         signal.setReasonJson(signalReasonBuilder.build(scalp, trend, chart, discovery, pressure, weekly, fusion, riskDecision));
 
         TradingSignalEntity saved = tradingSignalRepository.save(signal);
+        asset.setLastSignalGeneratedAt(saved.getGeneratedAt() == null ? OffsetDateTime.now() : saved.getGeneratedAt());
+        if (asset.getThemeCode() == null || asset.getThemeCode().isBlank()) {
+            asset.setThemeCode(normalizeThemeCode(asset.getTheme()));
+        }
+        assetUniverseRepository.save(asset);
         Map<String, Object> inputSnapshot = new LinkedHashMap<>();
         inputSnapshot.put("asset_code", asset.getAssetCode());
         inputSnapshot.put("country", asset.getCountry());
@@ -427,15 +466,231 @@ public class TradingSignalEngineService {
         return saved;
     }
 
-    private List<TradingSignalViewDto> queryByActions(String country, String theme, List<SignalActionType> actions, int limit) {
+    private List<TradingSignalViewDto> queryPanelSignals(
+            String country,
+            String theme,
+            List<SignalActionType> actions,
+            int limit,
+            PanelType panelType,
+            String signalWindow) {
+        int safeLimit = Math.max(1, limit);
+        int fetchSize = Math.max(safeLimit * Math.max(2, panelCandidateFetchMultiplier), safeLimit + 20);
+        String normalizedTheme = normalizeThemeCode(theme);
+        String normalizedCountry = country == null ? "" : country.trim();
+
         List<TradingSignalEntity> rows = (theme == null || theme.isBlank())
-                ? tradingSignalRepository.findByCountryAndActionInOrderByGeneratedAtDesc(country, actions, PageRequest.of(0, limit))
-                : tradingSignalRepository.findByCountryAndThemeAndActionInOrderByGeneratedAtDesc(country, theme, actions, PageRequest.of(0, limit));
-        return rows.stream().map(this::toViewDto).toList();
+                ? tradingSignalRepository.findByCountryAndSignalWindowAndActionInOrderByGeneratedAtDesc(
+                        normalizedCountry, signalWindow, actions, PageRequest.of(0, Math.min(fetchSize, 300)))
+                : tradingSignalRepository.findByCountryAndGeneratedAtAfterOrderByGeneratedAtDesc(
+                                normalizedCountry,
+                                OffsetDateTime.now().minusHours(24),
+                                PageRequest.of(0, Math.min(fetchSize, 300)))
+                        .stream()
+                        .filter(signal -> Objects.equals(signalWindow, signal.getSignalWindow()))
+                        .filter(signal -> actions.contains(signal.getAction()))
+                        .toList();
+
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+
+        Map<String, AssetUniverseEntity> assetMap = assetUniverseRepository.findByCountryAndActiveTrueOrderByDisplayWeightDescSelectionScoreDescUpdatedAtDesc(
+                        normalizedCountry)
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(AssetUniverseEntity::getAssetCode, a -> a, (a, b) -> a));
+
+        // 최신순 결과에서 자산별 1건만 유지하여 동일 자산의 중복 시그널 노출을 제거한다.
+        Map<String, TradingSignalEntity> latestByAsset = new LinkedHashMap<>();
+        boolean duplicateSignalRowsFound = false;
+        for (TradingSignalEntity row : rows) {
+            if (row.getAssetCode() == null || row.getAssetCode().isBlank()) {
+                continue;
+            }
+            if (latestByAsset.containsKey(row.getAssetCode())) {
+                duplicateSignalRowsFound = true;
+                continue;
+            }
+            latestByAsset.put(row.getAssetCode(), row);
+        }
+
+        List<PanelCandidate> candidates = latestByAsset.values().stream()
+                .map(signal -> {
+                    AssetUniverseEntity asset = assetMap.get(signal.getAssetCode());
+                    if (asset == null) {
+                        return null;
+                    }
+                    if (!matchesThemeFilter(theme, signal, asset)) {
+                        return null;
+                    }
+                    return toPanelCandidate(panelType, signal, asset, normalizedTheme);
+                })
+                .filter(Objects::nonNull)
+                .sorted(Comparator.comparing(PanelCandidate::panelScore).reversed()
+                        .thenComparing(c -> c.signal().getGeneratedAt(), Comparator.nullsLast(Comparator.reverseOrder())))
+                .toList();
+
+        List<PanelCandidate> selectedCandidates = new ArrayList<>();
+        Set<String> selectedAssetCodes = new HashSet<>();
+        Map<String, Integer> familyCount = new HashMap<>();
+        Map<String, Integer> themeCount = new HashMap<>();
+        boolean dedupApplied = duplicateSignalRowsFound;
+
+        for (PanelCandidate candidate : candidates) {
+            if (selectedCandidates.size() >= safeLimit) {
+                break;
+            }
+            TradingSignalEntity signal = candidate.signal();
+            AssetUniverseEntity asset = candidate.asset();
+            String family = tickerFamily(signal.getAssetCode());
+            String themeCode = safeString(asset.getThemeCode(), "N/A");
+
+            if (!selectedAssetCodes.add(signal.getAssetCode())) {
+                dedupApplied = true;
+                continue;
+            }
+            if (familyCount.getOrDefault(family, 0) >= Math.max(1, panelMaxSameFamily)) {
+                dedupApplied = true;
+                continue;
+            }
+            if (themeCount.getOrDefault(themeCode, 0) >= Math.max(1, panelMaxSameTheme) && isPriorityTheme(themeCode)) {
+                dedupApplied = true;
+                continue;
+            }
+            familyCount.merge(family, 1, Integer::sum);
+            themeCount.merge(themeCode, 1, Integer::sum);
+            selectedCandidates.add(candidate);
+        }
+
+        // 너무 엄격한 중복억제로 빈 화면 방지: 필터 완화 fallback
+        if (selectedCandidates.isEmpty()) {
+            return latestByAsset.values().stream()
+                    .filter(signal -> {
+                        AssetUniverseEntity asset = assetMap.get(signal.getAssetCode());
+                        return asset != null && matchesThemeFilter(theme, signal, asset);
+                    })
+                    .limit(safeLimit)
+                    .map(signal -> toViewDto(signal, assetMap.get(signal.getAssetCode()),
+                            PanelSelectionMeta.fallback(panelType, normalizedTheme)))
+                    .toList();
+        }
+
+        boolean finalDedupApplied = dedupApplied;
+        return selectedCandidates.stream()
+                .map(candidate -> toViewDto(
+                        candidate.signal(),
+                        candidate.asset(),
+                        candidate.meta() == null
+                                ? null
+                                : candidate.meta().withDedupApplied(finalDedupApplied)))
+                .toList();
     }
 
-    private TradingSignalViewDto toViewDto(TradingSignalEntity signal) {
-        String assetName = assetUniverseRepository.findById(signal.getAssetCode()).map(AssetUniverseEntity::getAssetName).orElse("-");
+    private PanelCandidate toPanelCandidate(
+            PanelType panelType,
+            TradingSignalEntity signal,
+            AssetUniverseEntity asset,
+            String normalizedThemeFilter) {
+        BigDecimal score = panelSignalScore(panelType, signal);
+        BigDecimal universeScore = scale(asset.getSelectionScore());
+        BigDecimal diversity = scale(asset.getDiversityScore());
+        BigDecimal displayWeight = BigDecimal.valueOf(asset.getDisplayWeight() == null ? 0 : asset.getDisplayWeight());
+        BigDecimal layerBonus = layerBonus(panelType, asset.getUniverseLayer());
+        BigDecimal stalePenalty = stalePenalty(asset);
+        BigDecimal priorityBonus = isPriorityTheme(asset.getThemeCode()) ? BigDecimal.valueOf(0.05d) : BigDecimal.ZERO;
+
+        BigDecimal total = score.multiply(BigDecimal.valueOf(0.55d), MathContext.DECIMAL64)
+                .add(scale(signal.getCombinedConfidence()).multiply(BigDecimal.valueOf(0.20d), MathContext.DECIMAL64))
+                .add(universeScore.divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(0.10d), MathContext.DECIMAL64))
+                .add(diversity.multiply(BigDecimal.valueOf(0.10d), MathContext.DECIMAL64))
+                .add(displayWeight.divide(BigDecimal.valueOf(1000), 6, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(0.05d), MathContext.DECIMAL64))
+                .add(layerBonus)
+                .add(priorityBonus)
+                .subtract(stalePenalty);
+
+        StringBuilder reason = new StringBuilder();
+        reason.append("panel=").append(panelType.name().toLowerCase(Locale.ROOT));
+        reason.append(",signal_window=").append(signal.getSignalWindow());
+        reason.append(",panel_score=").append(scale(score));
+        reason.append(",combined=").append(scale(signal.getCombinedConfidence()));
+        reason.append(",universe_score=").append(scale(universeScore));
+        reason.append(",layer=").append(asset.getUniverseLayer() == null ? "N/A" : asset.getUniverseLayer().name());
+        reason.append(",theme_code=").append(safeString(asset.getThemeCode(), "N/A"));
+        reason.append(",priority_theme=").append(isPriorityTheme(asset.getThemeCode()));
+        reason.append(",trade_enabled=").append(Boolean.TRUE.equals(asset.getIsTradeEnabled()));
+        reason.append(",stale_penalty=").append(scale(stalePenalty));
+        if (asset.getSelectionReason() != null && !asset.getSelectionReason().isBlank()) {
+            reason.append(",universe_reason=[").append(trimForMeta(asset.getSelectionReason(), 120)).append("]");
+        }
+
+        PanelSelectionMeta meta = new PanelSelectionMeta(
+                asset.getUniverseLayer() == null ? null : asset.getUniverseLayer().name(),
+                reason.toString(),
+                false,
+                scale(total.max(BigDecimal.ZERO).min(BigDecimal.ONE)),
+                !isBlank(normalizedThemeFilter) && isPriorityTheme(normalizedThemeFilter),
+                safeString(asset.getThemeCode(), null));
+        return new PanelCandidate(signal, asset, total, meta);
+    }
+
+    private BigDecimal panelSignalScore(PanelType panelType, TradingSignalEntity signal) {
+        return switch (panelType) {
+            case SCALP -> clamp01(scale(signal.getScalpSignalScore()).add(BigDecimal.valueOf(0.5d)));
+            case SWING -> clamp01(scale(signal.getSwingSignalScore()).add(BigDecimal.valueOf(0.5d)));
+            case DISCOVERY -> clamp01(scale(signal.getDiscoveryScore()));
+            case POSITION -> clamp01(scale(signal.getPositionManagementSignal()));
+        };
+    }
+
+    private BigDecimal layerBonus(PanelType panelType, UniverseLayerType layer) {
+        if (layer == null) {
+            return BigDecimal.ZERO;
+        }
+        return switch (panelType) {
+            case SCALP -> switch (layer) {
+                case THEME_LEADER -> BigDecimal.valueOf(0.08d);
+                case WATCHLIST -> BigDecimal.valueOf(0.06d);
+                case CORE -> BigDecimal.valueOf(0.03d);
+                case DISCOVERY -> BigDecimal.ZERO;
+            };
+            case SWING -> switch (layer) {
+                case CORE -> BigDecimal.valueOf(0.08d);
+                case WATCHLIST -> BigDecimal.valueOf(0.04d);
+                case THEME_LEADER -> BigDecimal.valueOf(0.03d);
+                case DISCOVERY -> BigDecimal.ZERO;
+            };
+            case DISCOVERY -> switch (layer) {
+                case DISCOVERY -> BigDecimal.valueOf(0.10d);
+                case THEME_LEADER -> BigDecimal.valueOf(0.04d);
+                case WATCHLIST -> BigDecimal.valueOf(0.02d);
+                case CORE -> BigDecimal.ZERO;
+            };
+            case POSITION -> BigDecimal.ZERO;
+        };
+    }
+
+    private BigDecimal stalePenalty(AssetUniverseEntity asset) {
+        if (asset == null) {
+            return BigDecimal.valueOf(0.5d);
+        }
+        BigDecimal penalty = BigDecimal.ZERO;
+        if (!Boolean.TRUE.equals(asset.getIsTradeEnabled())) {
+            penalty = penalty.add(BigDecimal.valueOf(0.20d));
+        }
+        if (asset.getLastQuoteReceivedAt() == null) {
+            penalty = penalty.add(BigDecimal.valueOf(0.10d));
+        }
+        if (asset.getLastSignalGeneratedAt() != null && asset.getDupExposureCooldownMinutes() != null && asset.getDupExposureCooldownMinutes() > 0) {
+            OffsetDateTime cooldownUntil = asset.getLastSignalGeneratedAt().plusMinutes(asset.getDupExposureCooldownMinutes());
+            if (OffsetDateTime.now().isBefore(cooldownUntil)) {
+                penalty = penalty.add(BigDecimal.valueOf(0.08d));
+            }
+        }
+        return penalty;
+    }
+
+    private TradingSignalViewDto toViewDto(TradingSignalEntity signal, AssetUniverseEntity asset, PanelSelectionMeta panelMeta) {
+        String assetName = asset != null && asset.getAssetName() != null ? asset.getAssetName()
+                : assetUniverseRepository.findById(signal.getAssetCode()).map(AssetUniverseEntity::getAssetName).orElse("-");
         return TradingSignalViewDto.builder()
                 .signalId(signal.getId())
                 .assetCode(signal.getAssetCode())
@@ -459,6 +714,12 @@ public class TradingSignalEngineService {
                 .riskChecks(parseRiskChecks(signal.getRiskChecks()))
                 .blockedReason(signal.getBlockedReason())
                 .reasonJson(signal.getReasonJson())
+                .universeLayer(panelMeta == null ? null : panelMeta.universeLayer())
+                .selectionReason(panelMeta == null ? null : panelMeta.selectionReason())
+                .dedupApplied(panelMeta == null ? null : panelMeta.dedupApplied())
+                .diversityScore(panelMeta == null ? null : panelMeta.diversityScore())
+                .coreThemeFilterApplied(panelMeta == null ? null : panelMeta.coreThemeFilterApplied())
+                .themeCode(panelMeta == null ? null : panelMeta.themeCode())
                 .generatedAt(signal.getGeneratedAt())
                 .build();
     }
@@ -479,6 +740,23 @@ public class TradingSignalEngineService {
             case DISCOVERY -> "6m";
             default -> "1d";
         };
+    }
+
+    private boolean matchesThemeFilter(String theme, TradingSignalEntity signal, AssetUniverseEntity asset) {
+        if (theme == null || theme.isBlank()) {
+            return true;
+        }
+        String normalizedTheme = normalizeThemeCode(theme);
+        if (normalizedTheme == null || normalizedTheme.isBlank()) {
+            return true;
+        }
+        if (signal != null && Objects.equals(normalizedTheme, normalizeThemeCode(signal.getTheme()))) {
+            return true;
+        }
+        if (asset != null && Objects.equals(normalizedTheme, normalizeThemeCode(asset.getTheme()))) {
+            return true;
+        }
+        return asset != null && Objects.equals(normalizedTheme, normalizeThemeCode(asset.getThemeCode()));
     }
 
     private String toJsonArray(List<String> values) {
@@ -545,8 +823,153 @@ public class TradingSignalEngineService {
         }
     }
 
+    private boolean isPriorityTheme(String themeCode) {
+        String normalized = normalizeThemeCode(themeCode);
+        if (normalized == null || normalized.isBlank()) {
+            return false;
+        }
+        if (priorityThemes == null || priorityThemes.isEmpty()) {
+            return Set.of("RESOURCE", "DEFENSE", "SPACE", "AI", "SEMICONDUCTOR", "ROBOTICS", "ENERGY").contains(normalized);
+        }
+        return priorityThemes.stream()
+                .filter(v -> v != null && !v.isBlank())
+                .map(this::normalizeThemeCode)
+                .filter(Objects::nonNull)
+                .anyMatch(normalized::equals);
+    }
+
+    private String normalizeThemeCode(String rawTheme) {
+        if (rawTheme == null || rawTheme.isBlank()) {
+            return null;
+        }
+        String v = rawTheme.trim().toUpperCase(Locale.ROOT)
+                .replace("&", " AND ")
+                .replace("/", " ")
+                .replace("-", " ")
+                .replaceAll("[^A-Z0-9가-힣 ]", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (v.isBlank()) {
+            return null;
+        }
+        if (v.contains("AI") || v.contains("인공지능")) {
+            return "AI";
+        }
+        if (v.contains("반도체") || v.contains("SEMICON") || v.contains("CHIP")) {
+            return "SEMICONDUCTOR";
+        }
+        if (v.contains("방산") || v.contains("DEFENSE") || v.contains("군수")) {
+            return "DEFENSE";
+        }
+        if (v.contains("우주") || v.contains("SPACE") || v.contains("AEROSPACE")) {
+            return "SPACE";
+        }
+        if (v.contains("로봇") || v.contains("ROBOT")) {
+            return "ROBOTICS";
+        }
+        if (v.contains("에너지") || v.contains("ENERGY") || v.contains("전력") || v.contains("OIL") || v.contains("GAS")) {
+            return "ENERGY";
+        }
+        if (v.contains("금") || v.contains("은") || v.contains("구리") || v.contains("자원")
+                || v.contains("RESOURCE") || v.contains("GOLD") || v.contains("SILVER") || v.contains("COPPER")) {
+            return "RESOURCE";
+        }
+        return v.replace(" ", "_");
+    }
+
+    private String tickerFamily(String assetCode) {
+        if (assetCode == null || assetCode.isBlank()) {
+            return "UNKNOWN";
+        }
+        String normalized = assetCode.toUpperCase(Locale.ROOT);
+        int dot = normalized.indexOf('.');
+        if (dot > 0) {
+            normalized = normalized.substring(0, dot);
+        }
+        return normalized.replaceAll("[0-9]", "");
+    }
+
+    private String safeString(String value, String fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        return value.trim();
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private String trimForMeta(String value, int maxLen) {
+        if (value == null) {
+            return "";
+        }
+        String normalized = value.replaceAll("[\\r\\n]+", " ").trim();
+        int safeLen = Math.max(1, maxLen);
+        return normalized.length() > safeLen ? normalized.substring(0, safeLen) : normalized;
+    }
+
     private String traceId() {
         String trace = MDC.get("trace_id");
         return trace == null ? "" : trace;
+    }
+
+    private enum PanelType {
+        SCALP,
+        SWING,
+        POSITION,
+        DISCOVERY
+    }
+
+    private record PanelCandidate(
+            TradingSignalEntity signal,
+            AssetUniverseEntity asset,
+            BigDecimal panelScore,
+            PanelSelectionMeta meta) {
+    }
+
+    private record PanelSelectionMeta(
+            String universeLayer,
+            String selectionReason,
+            boolean dedupApplied,
+            BigDecimal diversityScore,
+            boolean coreThemeFilterApplied,
+            String themeCode) {
+
+        static PanelSelectionMeta forPosition() {
+            return new PanelSelectionMeta(null, "panel=position,direct_asset_lookup=true", false, BigDecimal.ZERO, false, null);
+        }
+
+        static PanelSelectionMeta fallback(PanelType panelType, String themeCode) {
+            return new PanelSelectionMeta(
+                    null,
+                    "panel=" + panelType.name().toLowerCase(Locale.ROOT) + ",fallback=true",
+                    true,
+                    BigDecimal.ZERO,
+                    !isBlankStatic(themeCode) && isPriorityThemeStatic(themeCode),
+                    themeCode);
+        }
+
+        PanelSelectionMeta withDedupApplied(boolean value) {
+            return new PanelSelectionMeta(
+                    universeLayer,
+                    selectionReason,
+                    value,
+                    diversityScore,
+                    coreThemeFilterApplied,
+                    themeCode);
+        }
+
+        private static boolean isBlankStatic(String value) {
+            return value == null || value.isBlank();
+        }
+
+        private static boolean isPriorityThemeStatic(String themeCode) {
+            if (themeCode == null) {
+                return false;
+            }
+            return Set.of("RESOURCE", "DEFENSE", "SPACE", "AI", "SEMICONDUCTOR", "ROBOTICS", "ENERGY")
+                    .contains(themeCode);
+        }
     }
 }

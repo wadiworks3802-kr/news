@@ -166,3 +166,12 @@
 - [T159] DB 마이그레이션 추가: `V8__market_provider_collection_foundation.sql` 생성(`market_provider_job` 감사 컬럼 확장, quote/bar/provider_job COMMENT 보강, 진단 인덱스 추가).
 - [T160] 테스트 보강: `MarketCollectionDiagnosticsIntegrationTest` 추가(Mock end-to-end + toss 실패 fallback + kiwoom 빈응답 fallback 시나리오), `DataQualityAuditServiceTest` 생성자 변경 반영.
 - [T161] 로컬 검증 제약 확인: `./gradlew :core:compileJava :batch:compileJava :api:compileJava -x test` 실행 시 로컬 JDK21 toolchain 부재로 컴파일 미실행(현재 JDK25만 설치됨) 상태 기록.
+- [T162] PROMPT-8-REBUILD 2차 착수: 유니버스/선정/중복억제 중심으로 `asset_universe` 확장 필드, 패널 중복 반복 억제, 핵심분야 반영 범위 설계 및 기존 뉴스 홈/전략패널 호환성 점검.
+- [T163] 스키마/도메인 확장: `V9__asset_universe_policy_layers.sql` 추가(`theme_code`, `universe_layer`, `selection_reason`, 다양성/쿨다운/신선도 추적 필드 + TABLE/COLUMN/INDEX COMMENT), `AssetUniverseEntity`/`UniverseLayerType` 반영.
+- [T164] 리포지토리 보강: `AssetUniverseRepository` 테마코드 조회 메서드, `TradingSignalRepository` signal_window 기반 조회/최신 시그널 메서드, `NewsAssetLinkRepository` 최신 링크 조회 메서드 추가.
+- [T165] 유니버스 재구성 정책 고도화: `UniverseRebuildService`에 핵심분야(priority themes) 보너스, 거래가능성/시세 신선도 기반 제외, 레이어(CORE/WATCHLIST/THEME_LEADER/DISCOVERY) 배정, 다양성 점수/선정 근거(`selection_reason`) 계산, 진단 응답(`assets_by_layer`, `assets_by_theme_code`, stale/priority 카운트) 확장.
+- [T166] 전략패널 조회 중복억제 개선: `TradingSignalEngineService`에서 패널별 `signal_window` 분리 조회(`1h/1w/6m`), 자산 최신 시그널 1건 dedup, 패밀리/테마 편중 제한, 유니버스 레이어/다양성 기반 점수화, 패널 메타(`universe_layer`, `selection_reason`, `dedup_applied`, `diversity_score`, `theme_code`) 확장 및 fallback 유지.
+- [T167] API/설정 연동: `InsightController` 패널 메타에 `theme_code`, `selection_policy=universe-dedup-v2` 추가, `AdminDiagnosticsService` 다양성 진단 응답에 레이어/테마코드/신선도 요약 포함, `application*.yml`/`batch application*.yml`에 `app.universe.*` 중복억제/핵심분야/신선도 설정값 추가.
+- [T168] 시장데이터 수집 연계 보강: `MarketDataCollectionService` quote 수집 시 `asset_universe.last_quote_received_at` 갱신으로 유니버스 품질/신선도 정책과 실시간 수집 경로 연결.
+- [T169] 테스트 초안 추가: `TradingSignalEngineServicePanelSelectionTest`(패널 중복억제/메타 확장), `UniverseRebuildServiceDiagnosticsTest`(레이어/테마코드/신선도 진단 키) 신규 작성.
+- [T170] 로컬 검증 제약 재확인: `./gradlew ...test` 실행 시 Gradle toolchain 21 미설치 및 toolchain download repository 미설정으로 테스트 미실행(Windows 로컬 JDK25만 존재) 상태 기록.

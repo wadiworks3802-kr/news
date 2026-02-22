@@ -20,6 +20,10 @@ public interface AssetUniverseRepository extends JpaRepository<AssetUniverseEnti
             String country,
             String theme);
 
+    List<AssetUniverseEntity> findByCountryAndThemeCodeAndActiveTrueOrderByDisplayWeightDescSelectionScoreDescUpdatedAtDesc(
+            String country,
+            String themeCode);
+
     List<AssetUniverseEntity> findByCountryOrderBySelectionScoreDesc(String country);
 
     List<AssetUniverseEntity> findByCountryAndThemeOrderBySelectionScoreDesc(String country, String theme);
@@ -29,4 +33,6 @@ public interface AssetUniverseRepository extends JpaRepository<AssetUniverseEnti
     List<AssetUniverseEntity> findTop200ByThemeAndActiveTrueOrderByUpdatedAtDesc(String theme);
 
     List<AssetUniverseEntity> findTop200ByCountryAndThemeAndActiveTrueOrderByUpdatedAtDesc(String country, String theme);
+
+    List<AssetUniverseEntity> findTop200ByCountryAndThemeCodeAndActiveTrueOrderByUpdatedAtDesc(String country, String themeCode);
 }

@@ -21,14 +21,33 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignalEnti
             List<SignalActionType> actions,
             Pageable pageable);
 
+    List<TradingSignalEntity> findByCountryAndSignalWindowAndActionInOrderByGeneratedAtDesc(
+            String country,
+            String signalWindow,
+            List<SignalActionType> actions,
+            Pageable pageable);
+
     List<TradingSignalEntity> findByCountryAndThemeAndActionInOrderByGeneratedAtDesc(
             String country,
             String theme,
             List<SignalActionType> actions,
             Pageable pageable);
 
+    List<TradingSignalEntity> findByCountryAndThemeAndSignalWindowAndActionInOrderByGeneratedAtDesc(
+            String country,
+            String theme,
+            String signalWindow,
+            List<SignalActionType> actions,
+            Pageable pageable);
+
     List<TradingSignalEntity> findByCountryAndGeneratedAtAfterOrderByGeneratedAtDesc(
             String country,
+            OffsetDateTime since,
+            Pageable pageable);
+
+    List<TradingSignalEntity> findByCountryAndSignalWindowAndGeneratedAtAfterOrderByGeneratedAtDesc(
+            String country,
+            String signalWindow,
             OffsetDateTime since,
             Pageable pageable);
 
@@ -39,6 +58,8 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignalEnti
     List<TradingSignalEntity> findTop200ByAssetCodeOrderByGeneratedAtDesc(String assetCode);
 
     Optional<TradingSignalEntity> findTop1ByAssetCodeOrderByGeneratedAtDesc(String assetCode);
+
+    Optional<TradingSignalEntity> findTop1ByAssetCodeAndSignalWindowOrderByGeneratedAtDesc(String assetCode, String signalWindow);
 
     long countByAssetCodeAndGeneratedAtAfter(String assetCode, OffsetDateTime since);
 }

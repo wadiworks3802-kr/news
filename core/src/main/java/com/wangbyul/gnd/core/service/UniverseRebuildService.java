@@ -6,6 +6,7 @@ import com.wangbyul.gnd.core.domain.AssetVerificationStatusType;
 import com.wangbyul.gnd.core.domain.MarketDataQualitySnapshotEntity;
 import com.wangbyul.gnd.core.domain.MarketPriceBarEntity;
 import com.wangbyul.gnd.core.domain.MarketQuoteSnapshotEntity;
+import com.wangbyul.gnd.core.domain.UniverseLayerType;
 import com.wangbyul.gnd.core.repository.AssetUniverseRepository;
 import com.wangbyul.gnd.core.repository.MarketDataQualitySnapshotRepository;
 import com.wangbyul.gnd.core.repository.MarketPriceBarRepository;
@@ -19,7 +20,9 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -76,6 +79,24 @@ public class UniverseRebuildService {
     @Value("${app.universe.min-quality-score-for-core:70}")
     private BigDecimal minQualityScoreForCore;
 
+    @Value("${app.universe.priority-themes:RESOURCE,DEFENSE,SPACE,AI,SEMICONDUCTOR,ROBOTICS,ENERGY}")
+    private List<String> priorityThemes;
+
+    @Value("${app.universe.default-dup-exposure-cooldown-minutes:60}")
+    private int defaultDupExposureCooldownMinutes;
+
+    @Value("${app.universe.quote-freshness-threshold-minutes:180}")
+    private int quoteFreshnessThresholdMinutes;
+
+    @Value("${app.universe.signal-freshness-threshold-hours:48}")
+    private int signalFreshnessThresholdHours;
+
+    @Value("${app.universe.news-link-freshness-threshold-hours:168}")
+    private int newsLinkFreshnessThresholdHours;
+
+    @Value("${app.universe.theme-leader-per-priority-theme:2}")
+    private int themeLeaderPerPriorityTheme;
+
     @Transactional
     public UniverseRebuildResult rebuildUniverse(String triggeredBy) {
         List<AssetUniverseEntity> assets = assetUniverseRepository.findByActiveTrueOrderByUpdatedAtDesc();
@@ -101,6 +122,9 @@ public class UniverseRebuildService {
                     asset.getAssetCode(),
                     tradingSignalRepository.countByAssetCodeAndGeneratedAtAfter(asset.getAssetCode(), exposureSince));
         }
+        Map<String, OffsetDateTime> lastQuoteReceivedAtByAsset = resolveLatestQuoteReceivedAtByAsset(assets);
+        Map<String, OffsetDateTime> lastSignalGeneratedAtByAsset = resolveLatestSignalGeneratedAtByAsset(assets);
+        Map<String, OffsetDateTime> lastNewsLinkedAtByAsset = resolveLatestNewsLinkedAtByAsset(assets);
 
         Map<String, BigDecimal> latestQualityScoreByScope = resolveLatestQualityScores();
         Map<String, List<AssetUniverseEntity>> assetsByCountry = assets.stream()
@@ -132,6 +156,19 @@ public class UniverseRebuildService {
                 if (asset.getMarketCapRank() == null) {
                     asset.setMarketCapRank(i + 1);
                 }
+                asset.setThemeCode(normalizeThemeCode(asset.getTheme()));
+                asset.setIsUserWatch(Boolean.TRUE.equals(asset.getIsWatchlistAsset()) || Boolean.TRUE.equals(asset.getIsUserWatch()));
+                asset.setDupExposureCooldownMinutes(resolveDupExposureCooldownMinutes(rank));
+                asset.setLastQuoteReceivedAt(lastQuoteReceivedAtByAsset.get(asset.getAssetCode()));
+                asset.setLastSignalGeneratedAt(lastSignalGeneratedAtByAsset.get(asset.getAssetCode()));
+                asset.setLastNewsLinkedAt(lastNewsLinkedAtByAsset.get(asset.getAssetCode()));
+                asset.setIsTradeEnabled(isTradeEligible(
+                        asset,
+                        rank.qualityScore(),
+                        lastQuoteReceivedAtByAsset.get(asset.getAssetCode())));
+                asset.setUniverseLayer(UniverseLayerType.DISCOVERY);
+                asset.setDiversityScore(rank.diversityScore());
+                asset.setSelectionReason(rank.selectionReason());
                 asset.setIsCoreAsset(false);
                 asset.setDisplayWeight(0);
                 if (rank.repeatPenalty().compareTo(BigDecimal.ZERO) > 0) {
@@ -145,7 +182,8 @@ public class UniverseRebuildService {
             totalCountryMinFallback += guaranteedCountryCount;
             totalThemeMinFallback += guaranteedThemeCount;
 
-            assignDisplayWeights(selectedCore);
+            assignUniverseLayers(countryAssets, ranked, selectedCore);
+            assignDisplayWeights(countryAssets);
             totalCoreAssets += selectedCore.size();
         }
 
@@ -163,7 +201,7 @@ public class UniverseRebuildService {
     public Map<String, Object> universeDiagnostics(String country, String theme, int limit) {
         List<AssetUniverseEntity> filtered;
         if (country != null && !country.isBlank() && theme != null && !theme.isBlank()) {
-            filtered = assetUniverseRepository.findByCountryAndThemeOrderBySelectionScoreDesc(country, theme);
+            filtered = resolveByCountryAndThemeOrThemeCode(country, theme);
         } else if (country != null && !country.isBlank()) {
             filtered = assetUniverseRepository.findByCountryOrderBySelectionScoreDesc(country);
         } else {
@@ -176,16 +214,32 @@ public class UniverseRebuildService {
 
         List<Map<String, Object>> topAssets = filtered.stream()
                 .limit(Math.max(1, limit))
-                .map(asset -> Map.<String, Object>of(
-                        "asset_code", asset.getAssetCode(),
-                        "asset_name", asset.getAssetName(),
-                        "country", asset.getCountry(),
-                        "theme", safeString(asset.getTheme(), "N/A"),
-                        "selection_source", safeString(asset.getSelectionSource() == null ? null : asset.getSelectionSource().name(), "MANUAL"),
-                        "selection_score", safeDecimal(asset.getSelectionScore()),
-                        "display_weight", asset.getDisplayWeight() == null ? 0 : asset.getDisplayWeight(),
-                        "is_core_asset", Boolean.TRUE.equals(asset.getIsCoreAsset()),
-                        "verification_status", safeString(asset.getVerificationStatus() == null ? null : asset.getVerificationStatus().name(), "UNVERIFIED")))
+                .map(asset -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("asset_code", asset.getAssetCode());
+                    row.put("asset_name", asset.getAssetName());
+                    row.put("country", asset.getCountry());
+                    row.put("theme", safeString(asset.getTheme(), "N/A"));
+                    row.put("theme_code", safeString(asset.getThemeCode(), "N/A"));
+                    row.put("universe_layer", asset.getUniverseLayer() == null ? "N/A" : asset.getUniverseLayer().name());
+                    row.put("selection_source",
+                            safeString(asset.getSelectionSource() == null ? null : asset.getSelectionSource().name(), "MANUAL"));
+                    row.put("selection_score", safeDecimal(asset.getSelectionScore()));
+                    row.put("diversity_score", safeDecimal(asset.getDiversityScore()));
+                    row.put("selection_reason", safeString(asset.getSelectionReason(), ""));
+                    row.put("display_weight", asset.getDisplayWeight() == null ? 0 : asset.getDisplayWeight());
+                    row.put("is_core_asset", Boolean.TRUE.equals(asset.getIsCoreAsset()));
+                    row.put("is_trade_enabled", Boolean.TRUE.equals(asset.getIsTradeEnabled()));
+                    row.put("is_user_watch", Boolean.TRUE.equals(asset.getIsUserWatch()));
+                    row.put("dup_exposure_cooldown_minutes",
+                            asset.getDupExposureCooldownMinutes() == null ? 0 : asset.getDupExposureCooldownMinutes());
+                    row.put("last_signal_generated_at", asset.getLastSignalGeneratedAt());
+                    row.put("last_quote_received_at", asset.getLastQuoteReceivedAt());
+                    row.put("last_news_linked_at", asset.getLastNewsLinkedAt());
+                    row.put("verification_status",
+                            safeString(asset.getVerificationStatus() == null ? null : asset.getVerificationStatus().name(), "UNVERIFIED"));
+                    return row;
+                })
                 .toList();
 
         Map<String, Long> byCountry = filtered.stream()
@@ -194,6 +248,14 @@ public class UniverseRebuildService {
                 .collect(Collectors.groupingBy(
                         asset -> safeString(asset.getTheme(), "N/A"),
                         Collectors.counting()));
+        Map<String, Long> byThemeCode = filtered.stream()
+                .collect(Collectors.groupingBy(
+                        asset -> safeString(asset.getThemeCode(), "N/A"),
+                        Collectors.counting()));
+        Map<String, Long> byLayer = filtered.stream()
+                .collect(Collectors.groupingBy(
+                        asset -> asset.getUniverseLayer() == null ? "N/A" : asset.getUniverseLayer().name(),
+                        Collectors.counting()));
 
         Map<String, Long> topFamilies = filtered.stream()
                 .collect(Collectors.groupingBy(asset -> tickerFamily(asset.getAssetCode()), Collectors.counting()))
@@ -201,25 +263,40 @@ public class UniverseRebuildService {
                 .stream()
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
                 .limit(5)
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, java.util.LinkedHashMap::new));
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new));
 
         long coreCount = filtered.stream().filter(asset -> Boolean.TRUE.equals(asset.getIsCoreAsset())).count();
         long watchlistCount = filtered.stream().filter(asset -> Boolean.TRUE.equals(asset.getIsWatchlistAsset())).count();
+        long tradeEnabledCount = filtered.stream().filter(asset -> Boolean.TRUE.equals(asset.getIsTradeEnabled())).count();
+        long staleQuoteCount = filtered.stream().filter(asset -> !hasFreshQuote(asset.getLastQuoteReceivedAt())).count();
+        long staleSignalCount = filtered.stream().filter(asset -> !hasFreshSignal(asset.getLastSignalGeneratedAt())).count();
+        long staleNewsCount = filtered.stream().filter(asset -> !hasFreshNewsLink(asset.getLastNewsLinkedAt())).count();
+        long priorityThemeCount = filtered.stream().filter(asset -> isPriorityTheme(asset.getThemeCode())).count();
 
-        return Map.of(
-                "scope_country", safeString(country, "ALL"),
-                "scope_theme", safeString(theme, "ALL"),
-                "total_assets", filtered.size(),
-                "core_assets", coreCount,
-                "watchlist_assets", watchlistCount,
-                "assets_by_country", byCountry,
-                "assets_by_theme", byTheme,
-                "top_repeated_families", topFamilies,
-                "minimum_rules", Map.of(
-                        "min_assets_per_country", Math.max(1, minAssetsPerCountry),
-                        "min_assets_per_theme", Math.max(1, minAssetsPerTheme),
-                        "max_same_family_exposure", Math.max(1, maxSameFamilyExposure)),
-                "top_assets", topAssets);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("scope_country", safeString(country, "ALL"));
+        response.put("scope_theme", safeString(theme, "ALL"));
+        response.put("total_assets", filtered.size());
+        response.put("core_assets", coreCount);
+        response.put("watchlist_assets", watchlistCount);
+        response.put("trade_enabled_assets", tradeEnabledCount);
+        response.put("stale_quote_assets", staleQuoteCount);
+        response.put("stale_signal_assets", staleSignalCount);
+        response.put("stale_news_link_assets", staleNewsCount);
+        response.put("priority_theme_assets", priorityThemeCount);
+        response.put("assets_by_country", byCountry);
+        response.put("assets_by_theme", byTheme);
+        response.put("assets_by_theme_code", byThemeCode);
+        response.put("assets_by_layer", byLayer);
+        response.put("top_repeated_families", topFamilies);
+        response.put("minimum_rules", Map.of(
+                "min_assets_per_country", Math.max(1, minAssetsPerCountry),
+                "min_assets_per_theme", Math.max(1, minAssetsPerTheme),
+                "max_same_family_exposure", Math.max(1, maxSameFamilyExposure),
+                "default_dup_exposure_cooldown_minutes", Math.max(0, defaultDupExposureCooldownMinutes)));
+        response.put("priority_themes", normalizedPriorityThemes());
+        response.put("top_assets", topAssets);
+        return response;
     }
 
     private List<AssetRank> rankAssets(
@@ -245,6 +322,7 @@ public class UniverseRebuildService {
 
         List<AssetRank> ranked = new ArrayList<>();
         for (AssetUniverseEntity asset : assets) {
+            String themeCode = normalizeThemeCode(asset.getTheme());
             BigDecimal liquidity = safeDecimal(asset.getLiquidityScore());
             BigDecimal liquidityScore = clamp01(liquidity).multiply(BigDecimal.valueOf(30));
 
@@ -262,6 +340,7 @@ public class UniverseRebuildService {
             BigDecimal themeScore = (asset.getTheme() == null || asset.getTheme().isBlank())
                     ? BigDecimal.valueOf(2)
                     : BigDecimal.valueOf(10);
+            BigDecimal priorityThemeBonus = isPriorityTheme(themeCode) ? BigDecimal.valueOf(12) : BigDecimal.ZERO;
 
             long exposure = exposureCountByAsset.getOrDefault(asset.getAssetCode(), 0L);
             BigDecimal repeatPenalty = repeatPenaltyPerExposure
@@ -273,18 +352,41 @@ public class UniverseRebuildService {
             BigDecimal qualityPenalty = qualityScore.compareTo(minQualityScoreForCore) < 0
                     ? BigDecimal.valueOf(25)
                     : BigDecimal.ZERO;
+            boolean tradeEligibleByQuality = qualityScore.compareTo(minQualityScoreForCore) >= 0;
 
             BigDecimal raw = liquidityScore
                     .add(volumeScore)
                     .add(mentionScore)
                     .add(themeScore)
+                    .add(priorityThemeBonus)
                     .subtract(repeatPenalty)
                     .subtract(qualityPenalty);
             BigDecimal finalScore = raw.max(BigDecimal.ZERO).min(BigDecimal.valueOf(100)).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal diversityScore = calculateBaseDiversityScore(asset, mentionNormalized, exposure, themeCode, tradeEligibleByQuality);
 
             AssetSelectionSourceType selectionSource = decideSelectionSource(asset, mentionNormalized, volumeNormalized);
             asset.setMarketCapRank(marketCapRankByAsset.getOrDefault(asset.getAssetCode(), null));
-            ranked.add(new AssetRank(asset, finalScore, qualityScore, repeatPenalty, selectionSource));
+            String selectionReason = buildSelectionReason(
+                    asset,
+                    themeCode,
+                    selectionSource,
+                    finalScore,
+                    qualityScore,
+                    repeatPenalty,
+                    priorityThemeBonus,
+                    mentionNormalized,
+                    volumeNormalized,
+                    tradeEligibleByQuality);
+            ranked.add(new AssetRank(
+                    asset,
+                    finalScore,
+                    qualityScore,
+                    repeatPenalty,
+                    selectionSource,
+                    diversityScore,
+                    tradeEligibleByQuality,
+                    isPriorityTheme(themeCode),
+                    selectionReason));
         }
 
         ranked.sort(Comparator.comparing(AssetRank::score).reversed()
@@ -308,10 +410,11 @@ public class UniverseRebuildService {
             String family = tickerFamily(asset.getAssetCode());
             String type = asset.getAssetType() == null ? "UNKNOWN" : asset.getAssetType().name();
             boolean qualityAllowed = rank.qualityScore().compareTo(minQualityScoreForCore) >= 0;
+            boolean tradeAllowed = rank.tradeEligible();
             boolean familyAllowed = familyCount.getOrDefault(family, 0) < Math.max(1, maxSameFamilyExposure);
             boolean typeAllowed = typeCount.getOrDefault(type, 0) < Math.max(1, target / 2 + 1);
 
-            if (qualityAllowed && familyAllowed && typeAllowed) {
+            if (qualityAllowed && tradeAllowed && familyAllowed && typeAllowed) {
                 selected.add(asset);
                 selectedCodes.add(asset.getAssetCode());
                 familyCount.merge(family, 1, Integer::sum);
@@ -329,7 +432,7 @@ public class UniverseRebuildService {
                 if (selectedCodes.contains(asset.getAssetCode())) {
                     continue;
                 }
-                if (rank.qualityScore().compareTo(minQualityScoreForCore) < 0) {
+                if (rank.qualityScore().compareTo(minQualityScoreForCore) < 0 || !rank.tradeEligible()) {
                     continue;
                 }
                 selected.add(asset);
@@ -412,12 +515,99 @@ public class UniverseRebuildService {
         return fallbackCount;
     }
 
-    private void assignDisplayWeights(List<AssetUniverseEntity> selectedCore) {
-        selectedCore.sort(Comparator.comparing(AssetUniverseEntity::getSelectionScore, Comparator.nullsLast(Comparator.reverseOrder()))
-                .thenComparing(AssetUniverseEntity::getAssetCode));
-        for (int i = 0; i < selectedCore.size(); i++) {
-            AssetUniverseEntity asset = selectedCore.get(i);
-            asset.setDisplayWeight(Math.max(1, 100 - (i * 3)));
+    private void assignUniverseLayers(
+            List<AssetUniverseEntity> countryAssets,
+            List<AssetRank> ranked,
+            List<AssetUniverseEntity> selectedCore) {
+        Set<String> coreCodes = selectedCore.stream().map(AssetUniverseEntity::getAssetCode).collect(Collectors.toSet());
+        Set<String> assignedThemeLeaders = new HashSet<>();
+
+        for (AssetUniverseEntity asset : countryAssets) {
+            if (coreCodes.contains(asset.getAssetCode())) {
+                asset.setUniverseLayer(UniverseLayerType.CORE);
+                asset.setIsCoreAsset(true);
+                continue;
+            }
+            asset.setIsCoreAsset(false);
+            if (Boolean.TRUE.equals(asset.getIsUserWatch()) || Boolean.TRUE.equals(asset.getIsWatchlistAsset())) {
+                asset.setUniverseLayer(UniverseLayerType.WATCHLIST);
+            } else {
+                asset.setUniverseLayer(UniverseLayerType.DISCOVERY);
+            }
+        }
+
+        Map<String, Integer> leadersPerTheme = new HashMap<>();
+        for (AssetRank rank : ranked) {
+            AssetUniverseEntity asset = rank.asset();
+            if (coreCodes.contains(asset.getAssetCode())) {
+                continue;
+            }
+            if (!rank.tradeEligible()) {
+                continue;
+            }
+            String themeCode = normalizeThemeCode(asset.getTheme());
+            if (!isPriorityTheme(themeCode)) {
+                continue;
+            }
+            int current = leadersPerTheme.getOrDefault(themeCode, 0);
+            if (current >= Math.max(1, themeLeaderPerPriorityTheme)) {
+                continue;
+            }
+            if (asset.getUniverseLayer() == UniverseLayerType.WATCHLIST) {
+                continue;
+            }
+            asset.setUniverseLayer(UniverseLayerType.THEME_LEADER);
+            leadersPerTheme.put(themeCode, current + 1);
+            assignedThemeLeaders.add(asset.getAssetCode());
+        }
+
+        // 최소한 일부 발굴 레이어가 유지되도록 상위 점수 기반으로 DISCOVERY를 재보장한다.
+        int discoveryBudget = Math.max(2, Math.min(8, countryAssets.size() / 4));
+        int currentDiscovery = (int) countryAssets.stream().filter(a -> a.getUniverseLayer() == UniverseLayerType.DISCOVERY).count();
+        if (currentDiscovery < discoveryBudget) {
+            for (AssetRank rank : ranked) {
+                if (currentDiscovery >= discoveryBudget) {
+                    break;
+                }
+                AssetUniverseEntity asset = rank.asset();
+                if (coreCodes.contains(asset.getAssetCode())) {
+                    continue;
+                }
+                if (!rank.tradeEligible()) {
+                    continue;
+                }
+                if (asset.getUniverseLayer() == UniverseLayerType.DISCOVERY) {
+                    currentDiscovery++;
+                    continue;
+                }
+                if (asset.getUniverseLayer() == UniverseLayerType.WATCHLIST) {
+                    continue;
+                }
+                if (assignedThemeLeaders.contains(asset.getAssetCode())) {
+                    asset.setUniverseLayer(UniverseLayerType.DISCOVERY);
+                    currentDiscovery++;
+                }
+            }
+        }
+    }
+
+    private void assignDisplayWeights(List<AssetUniverseEntity> countryAssets) {
+        List<AssetUniverseEntity> sorted = countryAssets.stream()
+                .sorted(Comparator.comparing(
+                                (AssetUniverseEntity asset) -> layerBaseWeight(asset.getUniverseLayer()))
+                        .reversed()
+                        .thenComparing(AssetUniverseEntity::getSelectionScore, Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(AssetUniverseEntity::getDiversityScore, Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(AssetUniverseEntity::getAssetCode))
+                .toList();
+
+        for (int i = 0; i < sorted.size(); i++) {
+            AssetUniverseEntity asset = sorted.get(i);
+            int rankPenalty = i * 2;
+            int base = layerBaseWeight(asset.getUniverseLayer());
+            int scoreBonus = safeDecimal(asset.getSelectionScore()).intValue();
+            int diversityBonus = safeDecimal(asset.getDiversityScore()).multiply(BigDecimal.valueOf(10)).intValue();
+            asset.setDisplayWeight(Math.max(0, base + scoreBonus + diversityBonus - rankPenalty));
             if (asset.getVerificationStatus() == null) {
                 asset.setVerificationStatus(AssetVerificationStatusType.UNVERIFIED);
             }
@@ -442,6 +632,34 @@ public class UniverseRebuildService {
         return result;
     }
 
+    private Map<String, OffsetDateTime> resolveLatestQuoteReceivedAtByAsset(List<AssetUniverseEntity> assets) {
+        Map<String, OffsetDateTime> result = new HashMap<>();
+        for (AssetUniverseEntity asset : assets) {
+            marketQuoteSnapshotRepository.findTop1ByAssetCodeOrderBySnapshotUtcDesc(asset.getAssetCode())
+                    .ifPresent(quote -> result.put(asset.getAssetCode(),
+                            quote.getQuoteTimeUtc() != null ? quote.getQuoteTimeUtc() : quote.getSnapshotUtc()));
+        }
+        return result;
+    }
+
+    private Map<String, OffsetDateTime> resolveLatestSignalGeneratedAtByAsset(List<AssetUniverseEntity> assets) {
+        Map<String, OffsetDateTime> result = new HashMap<>();
+        for (AssetUniverseEntity asset : assets) {
+            tradingSignalRepository.findTop1ByAssetCodeOrderByGeneratedAtDesc(asset.getAssetCode())
+                    .ifPresent(signal -> result.put(asset.getAssetCode(), signal.getGeneratedAt()));
+        }
+        return result;
+    }
+
+    private Map<String, OffsetDateTime> resolveLatestNewsLinkedAtByAsset(List<AssetUniverseEntity> assets) {
+        Map<String, OffsetDateTime> result = new HashMap<>();
+        for (AssetUniverseEntity asset : assets) {
+            newsAssetLinkRepository.findTop1ByAssetCodeOrderByCreatedAtDesc(asset.getAssetCode())
+                    .ifPresent(link -> result.put(asset.getAssetCode(), link.getCreatedAt()));
+        }
+        return result;
+    }
+
     private BigDecimal averageVolume(List<BigDecimal> volumes) {
         List<BigDecimal> filtered = volumes.stream().filter(v -> v != null && v.compareTo(BigDecimal.ZERO) > 0).toList();
         if (filtered.isEmpty()) {
@@ -455,7 +673,7 @@ public class UniverseRebuildService {
             AssetUniverseEntity asset,
             BigDecimal mentionNormalized,
             BigDecimal volumeNormalized) {
-        if (Boolean.TRUE.equals(asset.getIsWatchlistAsset())) {
+        if (Boolean.TRUE.equals(asset.getIsUserWatch()) || Boolean.TRUE.equals(asset.getIsWatchlistAsset())) {
             return AssetSelectionSourceType.WATCHLIST;
         }
         if (mentionNormalized.compareTo(BigDecimal.valueOf(0.7d)) >= 0) {
@@ -470,18 +688,214 @@ public class UniverseRebuildService {
         return AssetSelectionSourceType.MARKET_CAP;
     }
 
+    private List<AssetUniverseEntity> resolveByCountryAndThemeOrThemeCode(String country, String theme) {
+        String normalizedThemeCode = normalizeThemeCode(theme);
+        List<AssetUniverseEntity> byRawTheme = assetUniverseRepository.findByCountryAndThemeOrderBySelectionScoreDesc(country, theme);
+        if (!byRawTheme.isEmpty()) {
+            return byRawTheme;
+        }
+        List<AssetUniverseEntity> byThemeCode = assetUniverseRepository
+                .findByCountryAndThemeCodeAndActiveTrueOrderByDisplayWeightDescSelectionScoreDescUpdatedAtDesc(country, normalizedThemeCode);
+        if (!byThemeCode.isEmpty()) {
+            return byThemeCode;
+        }
+        return assetUniverseRepository.findTop200ByCountryAndThemeCodeAndActiveTrueOrderByUpdatedAtDesc(country, normalizedThemeCode);
+    }
+
     private Map<String, BigDecimal> resolveLatestQualityScores() {
         List<MarketDataQualitySnapshotEntity> snapshots = marketDataQualitySnapshotRepository.findTop200ByOrderBySnapshotTimeUtcDesc();
         Map<String, BigDecimal> map = new HashMap<>();
         for (MarketDataQualitySnapshotEntity snapshot : snapshots) {
             String key = scopeKey(snapshot.getCountry(), snapshot.getTheme());
             map.putIfAbsent(key, safeDecimal(snapshot.getQualityScore()));
+            String themeCodeKey = scopeKey(snapshot.getCountry(), normalizeThemeCode(snapshot.getTheme()));
+            map.putIfAbsent(themeCodeKey, safeDecimal(snapshot.getQualityScore()));
         }
         return map;
     }
 
     private String scopeKey(String country, String theme) {
         return safeString(country, "ALL") + "::" + safeString(theme, "N/A");
+    }
+
+    private BigDecimal calculateBaseDiversityScore(
+            AssetUniverseEntity asset,
+            BigDecimal mentionNormalized,
+            long exposureCount,
+            String themeCode,
+            boolean tradeEligibleByQuality) {
+        BigDecimal score = BigDecimal.ONE;
+        if (Boolean.TRUE.equals(asset.getIsUserWatch()) || Boolean.TRUE.equals(asset.getIsWatchlistAsset())) {
+            score = score.subtract(BigDecimal.valueOf(0.05d));
+        }
+        if (isPriorityTheme(themeCode)) {
+            score = score.subtract(BigDecimal.valueOf(0.08d));
+        }
+        if (mentionNormalized.compareTo(BigDecimal.valueOf(0.8d)) > 0) {
+            score = score.subtract(BigDecimal.valueOf(0.10d));
+        }
+        if (exposureCount > 0) {
+            score = score.subtract(BigDecimal.valueOf(Math.min(0.40d, exposureCount * 0.05d)));
+        }
+        if (!tradeEligibleByQuality) {
+            score = score.subtract(BigDecimal.valueOf(0.20d));
+        }
+        return score.max(BigDecimal.ZERO).min(BigDecimal.ONE).setScale(4, RoundingMode.HALF_UP);
+    }
+
+    private String buildSelectionReason(
+            AssetUniverseEntity asset,
+            String themeCode,
+            AssetSelectionSourceType selectionSource,
+            BigDecimal finalScore,
+            BigDecimal qualityScore,
+            BigDecimal repeatPenalty,
+            BigDecimal priorityThemeBonus,
+            BigDecimal mentionNormalized,
+            BigDecimal volumeNormalized,
+            boolean tradeEligibleByQuality) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("source=").append(selectionSource == null ? "MANUAL" : selectionSource.name());
+        sb.append(",score=").append(safeDecimal(finalScore).setScale(2, RoundingMode.HALF_UP));
+        sb.append(",quality=").append(safeDecimal(qualityScore).setScale(2, RoundingMode.HALF_UP));
+        if (isPriorityTheme(themeCode)) {
+            sb.append(",priority_theme=").append(themeCode);
+        }
+        if (priorityThemeBonus.compareTo(BigDecimal.ZERO) > 0) {
+            sb.append(",priority_bonus=").append(priorityThemeBonus.setScale(2, RoundingMode.HALF_UP));
+        }
+        if (repeatPenalty.compareTo(BigDecimal.ZERO) > 0) {
+            sb.append(",repeat_penalty=").append(repeatPenalty.setScale(2, RoundingMode.HALF_UP));
+        }
+        sb.append(",mention_norm=").append(mentionNormalized.setScale(2, RoundingMode.HALF_UP));
+        sb.append(",volume_norm=").append(volumeNormalized.setScale(2, RoundingMode.HALF_UP));
+        sb.append(",trade_quality_ok=").append(tradeEligibleByQuality);
+        if (asset.getTheme() != null && !asset.getTheme().isBlank()) {
+            sb.append(",raw_theme=").append(normalizeTextForReason(asset.getTheme()));
+        }
+        return sb.toString();
+    }
+
+    private int resolveDupExposureCooldownMinutes(AssetRank rank) {
+        int base = Math.max(0, defaultDupExposureCooldownMinutes);
+        if (rank.priorityTheme()) {
+            base += 15;
+        }
+        if (rank.repeatPenalty().compareTo(BigDecimal.valueOf(3)) >= 0) {
+            base += 30;
+        }
+        return base;
+    }
+
+    private boolean isTradeEligible(AssetUniverseEntity asset, BigDecimal qualityScore, OffsetDateTime lastQuoteReceivedAt) {
+        if (asset == null || !Boolean.TRUE.equals(asset.getActive())) {
+            return false;
+        }
+        if (asset.getVerificationStatus() == AssetVerificationStatusType.FAILED) {
+            return false;
+        }
+        if (qualityScore != null && qualityScore.compareTo(minQualityScoreForCore) < 0) {
+            return false;
+        }
+        return hasFreshQuote(lastQuoteReceivedAt);
+    }
+
+    private boolean hasFreshQuote(OffsetDateTime lastQuoteReceivedAt) {
+        if (lastQuoteReceivedAt == null) {
+            return false;
+        }
+        return lastQuoteReceivedAt.isAfter(OffsetDateTime.now().minusMinutes(Math.max(1, quoteFreshnessThresholdMinutes)));
+    }
+
+    private boolean hasFreshSignal(OffsetDateTime lastSignalGeneratedAt) {
+        if (lastSignalGeneratedAt == null) {
+            return false;
+        }
+        return lastSignalGeneratedAt.isAfter(OffsetDateTime.now().minusHours(Math.max(1, signalFreshnessThresholdHours)));
+    }
+
+    private boolean hasFreshNewsLink(OffsetDateTime lastNewsLinkedAt) {
+        if (lastNewsLinkedAt == null) {
+            return false;
+        }
+        return lastNewsLinkedAt.isAfter(OffsetDateTime.now().minusHours(Math.max(1, newsLinkFreshnessThresholdHours)));
+    }
+
+    private int layerBaseWeight(UniverseLayerType layer) {
+        if (layer == null) {
+            return 100;
+        }
+        return switch (layer) {
+            case CORE -> 300;
+            case WATCHLIST -> 260;
+            case THEME_LEADER -> 220;
+            case DISCOVERY -> 160;
+        };
+    }
+
+    private boolean isPriorityTheme(String themeCode) {
+        if (themeCode == null || themeCode.isBlank()) {
+            return false;
+        }
+        return normalizedPriorityThemes().contains(themeCode);
+    }
+
+    private Set<String> normalizedPriorityThemes() {
+        if (priorityThemes == null || priorityThemes.isEmpty()) {
+            return Set.of("RESOURCE", "DEFENSE", "SPACE", "AI", "SEMICONDUCTOR", "ROBOTICS", "ENERGY");
+        }
+        return priorityThemes.stream()
+                .filter(v -> v != null && !v.isBlank())
+                .map(this::normalizeThemeCode)
+                .filter(v -> v != null && !v.isBlank())
+                .collect(Collectors.toCollection(HashSet::new));
+    }
+
+    private String normalizeThemeCode(String rawTheme) {
+        if (rawTheme == null || rawTheme.isBlank()) {
+            return null;
+        }
+        String v = rawTheme.trim().toUpperCase(Locale.ROOT)
+                .replace("&", " AND ")
+                .replace("/", " ")
+                .replace("-", " ")
+                .replaceAll("[^A-Z0-9가-힣 ]", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (v.isBlank()) {
+            return null;
+        }
+        if (v.contains("AI") || v.contains("인공지능")) {
+            return "AI";
+        }
+        if (v.contains("반도체") || v.contains("SEMICON") || v.contains("CHIP")) {
+            return "SEMICONDUCTOR";
+        }
+        if (v.contains("방산") || v.contains("DEFENSE") || v.contains("군수")) {
+            return "DEFENSE";
+        }
+        if (v.contains("우주") || v.contains("SPACE") || v.contains("AEROSPACE")) {
+            return "SPACE";
+        }
+        if (v.contains("로봇") || v.contains("ROBOT")) {
+            return "ROBOTICS";
+        }
+        if (v.contains("에너지") || v.contains("ENERGY") || v.contains("전력") || v.contains("OIL") || v.contains("GAS")) {
+            return "ENERGY";
+        }
+        if (v.contains("금") || v.contains("은") || v.contains("구리") || v.contains("자원")
+                || v.contains("RESOURCE") || v.contains("GOLD") || v.contains("SILVER") || v.contains("COPPER")) {
+            return "RESOURCE";
+        }
+        return v.replace(" ", "_");
+    }
+
+    private String normalizeTextForReason(String value) {
+        if (value == null) {
+            return "";
+        }
+        String v = value.replaceAll("[\\r\\n]+", " ").trim();
+        return v.length() > 64 ? v.substring(0, 64) : v;
     }
 
     private BigDecimal clamp01(BigDecimal value) {
@@ -524,7 +938,11 @@ public class UniverseRebuildService {
             BigDecimal score,
             BigDecimal qualityScore,
             BigDecimal repeatPenalty,
-            AssetSelectionSourceType selectionSource) {
+            AssetSelectionSourceType selectionSource,
+            BigDecimal diversityScore,
+            boolean tradeEligible,
+            boolean priorityTheme,
+            String selectionReason) {
     }
 
     public record UniverseRebuildResult(

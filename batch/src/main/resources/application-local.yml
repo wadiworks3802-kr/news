@@ -54,9 +54,18 @@ app:
     min-assets-per-theme: 3
     core-assets-per-country: 8
     max-same-family-exposure: 2
+    panel-max-same-family: 1
+    panel-max-same-theme: 2
+    panel-candidate-fetch-multiplier: 8
     repeat-penalty-lookback-days: 7
     repeat-penalty-per-exposure: 1.5
     min-quality-score-for-core: 70
+    priority-themes: [RESOURCE, DEFENSE, SPACE, AI, SEMICONDUCTOR, ROBOTICS, ENERGY]
+    default-dup-exposure-cooldown-minutes: 60
+    quote-freshness-threshold-minutes: 180
+    signal-freshness-threshold-hours: 48
+    news-link-freshness-threshold-hours: 168
+    theme-leader-per-priority-theme: 2
     mapping-window-days: 7
     mapping-max-links-per-news: 6
   news:
