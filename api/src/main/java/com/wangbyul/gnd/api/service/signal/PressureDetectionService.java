@@ -96,6 +96,8 @@ public class PressureDetectionService {
 
         boolean sellNegative = sellDetected && !volumeRegimeSame;
         boolean buyPositive = buyDetected && !volumeRegimeSame;
+        boolean sellNeutralizedByVolumeSame = sellDetected && volumeRegimeSame;
+        boolean buyNeutralizedByVolumeSame = buyDetected && volumeRegimeSame;
 
         Map<String, Object> reason = new LinkedHashMap<>();
         reason.put("rule_set", "PRESSURE_RULESET_V1");
@@ -113,6 +115,9 @@ public class PressureDetectionService {
         reason.put("buy_pressure_detected", buyDetected);
         reason.put("sell_pressure_is_negative", sellNegative);
         reason.put("buy_pressure_is_positive", buyPositive);
+        reason.put("sell_pressure_neutralized_by_volume_same", sellNeutralizedByVolumeSame);
+        reason.put("buy_pressure_neutralized_by_volume_same", buyNeutralizedByVolumeSame);
+        reason.put("auto_classification_suppressed_by_volume_same", sellNeutralizedByVolumeSame || buyNeutralizedByVolumeSame);
 
         return new PressureDetectionResult(
                 sellDetected,

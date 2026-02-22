@@ -9,6 +9,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wangbyul.gnd.api.config.SignalPolicyProperties;
 import com.wangbyul.gnd.api.dto.TradingSignalViewDto;
 import com.wangbyul.gnd.api.service.SystemFeatureToggleService;
+import com.wangbyul.gnd.api.service.signal.panel.ChartResponseStrategyService;
+import com.wangbyul.gnd.api.service.signal.panel.DiscoveryStrategyService;
+import com.wangbyul.gnd.api.service.signal.panel.ScalpStrategyService;
+import com.wangbyul.gnd.api.service.signal.panel.SwingStrategyService;
 import com.wangbyul.gnd.core.domain.AssetSelectionSourceType;
 import com.wangbyul.gnd.core.domain.AssetUniverseEntity;
 import com.wangbyul.gnd.core.domain.SignalActionType;
@@ -71,6 +75,7 @@ class TradingSignalEngineServicePanelSelectionTest {
 
     @Test
     void scalpPanelShouldReduceRepeatedAssetsAndFamiliesAndExposeSelectionMeta() {
+        ObjectMapper objectMapper = new ObjectMapper();
         TradingSignalEngineService service = new TradingSignalEngineService(
                 assetUniverseRepository,
                 tradingSignalRepository,
@@ -87,9 +92,13 @@ class TradingSignalEngineServicePanelSelectionTest {
                 timeAlignmentValidationService,
                 signalAuditLogService,
                 signalReasonBuilder,
-                new ObjectMapper(),
+                objectMapper,
                 new SignalPolicyProperties(),
-                systemFeatureToggleService);
+                systemFeatureToggleService,
+                new ScalpStrategyService(objectMapper),
+                new SwingStrategyService(objectMapper),
+                new ChartResponseStrategyService(objectMapper),
+                new DiscoveryStrategyService(objectMapper));
 
         ReflectionTestUtils.setField(service, "panelMaxSameFamily", 1);
         ReflectionTestUtils.setField(service, "panelMaxSameTheme", 3);

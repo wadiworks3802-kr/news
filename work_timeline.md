@@ -183,3 +183,11 @@
 - [T176] 상세보기/감사 확장 연동: `TradingSignalEngineService`, `SignalDetailDto`, `SignalAuditLogService`에 상·하위 요인/설명문/정렬결과/신선도/중복결과 저장 및 상세 API 응답(왜 WATCH/HOLD인지, 부족요건/변경조건) 노출 반영.
 - [T177] UI 최소 보강: `web/ui.js` 상세 모달에 `decision_why`, `missing_requirements`, `change_conditions` 표시 및 `NO_MATCHED_NEWS`/`INSUFFICIENT_DATA` 상태에서 뉴스기반 확률 보류 문구 표출 추가(기존 패널 구조 유지).
 - [T178] 테스트 초안 보강/로컬 검증 제약 기록: `ScalpNewsSignalServiceTest`에 이벤트 기반 확률 분산/매핑 근거 저장 검증 시나리오 추가, `./gradlew :api:compileJava -x test`는 JDK21 toolchain 미탐지로 미실행 상태 재확인.
+- [T179] PROMPT-8-REBUILD 4차 착수: 전략 엔진 분리 + 리스크/자금관리 패널 실질화 + 차트대응 사용자 규칙 반영 범위를 기준으로 기존 패널/진단/UI 영향도 분석 및 변경 범위 확정.
+- [T180] 전략 패널 분리 서비스 구현: `api/service/signal/panel` 패키지에 `ScalpStrategyService`, `SwingStrategyService`, `ChartResponseStrategyService`, `DiscoveryStrategyService`, `PanelStrategyEvaluation` 추가(전략별 입력/정렬기준/상태배지/목적/핵심지표 분리).
+- [T181] 전략패널 조회 오케스트레이션 개편: `TradingSignalEngineService`가 전략별 서비스의 `signalWindow/allowedActions/evaluate`를 사용하도록 변경하고 패널 메타(`strategy_key`, `panel_purpose`, `primary_metric_*`, `state_*`, `quality_degraded`, `sort_basis`)를 `TradingSignalViewDto`에 확장 반영.
+- [T182] 차트 대응 사용자 규칙 명시 반영: `PressureDetectionService`에 거래량 동일 구간 중립화 플래그(`*_neutralized_by_volume_same`) 저장, `SignalFusionService`에 "거래량 동일 구간 연속 매수/매도 자동 단정 금지 -> WATCH" 규칙 적용.
+- [T183] 리스크/자금관리 패널 실질화: `RiskPolicyService`/`PaperTradeRiskDto`/`PaperTradeController`에 전략별 액션분포·차단분포·중복노출 통계·BUY_LOCK/재분석 대기·품질저하/비중경고·분산경고·참고용 투자금 기반 제안(실주문 아님) 필드 및 `capital_total` 참고입력 지원 추가.
+- [T184] 관리자 진단 확장: `AdminDiagnosticsService.getSignalConfidenceDistribution()`에 전략별 액션/차단사유 분포 및 중복노출 통계 집계(`action_distribution_by_strategy`, `duplicate_exposure_stats`) 추가.
+- [T185] UI 최소 보강(구조 유지): `web/api.js`, `web/app.js`, `web/ui.js`에서 전략패널 카드에 전략목적/상태배지/중복억제/품질저하/핵심지표 표시를 추가하고, 리스크 패널에 전략별 추천·차단/중복노출/차단사유/BUY_LOCK/품질저하/분산경고/참고용 제안 텍스트를 렌더링하도록 확장.
+- [T186] 테스트 초안 보강/검증 제약 기록: `SignalPanelStrategyServiceTest` 신규 추가(차트대응 중립화/단타 데이터부족 상태배지 규칙), 기존 `TradingSignalEngineServicePanelSelectionTest`/`RiskPolicyServiceTest` 생성자 갱신; 로컬 `:api:compileJava` 및 테스트는 JDK21 toolchain 부재로 미실행 상태 유지.

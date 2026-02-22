@@ -9,14 +9,18 @@ import com.wangbyul.gnd.api.service.signal.model.RiskDecision;
 import com.wangbyul.gnd.core.domain.AssetUniverseEntity;
 import com.wangbyul.gnd.core.domain.PaperTradePositionEntity;
 import com.wangbyul.gnd.core.domain.SignalActionType;
+import com.wangbyul.gnd.core.domain.TradingSignalEntity;
 import com.wangbyul.gnd.core.repository.AssetUniverseRepository;
 import com.wangbyul.gnd.core.repository.MarketQuoteSnapshotRepository;
 import com.wangbyul.gnd.core.repository.PaperTradePositionRepository;
+import com.wangbyul.gnd.core.repository.TradingSignalRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -35,6 +39,7 @@ public class RiskPolicyService {
     private final PaperTradePositionRepository paperTradePositionRepository;
     private final AssetUniverseRepository assetUniverseRepository;
     private final MarketQuoteSnapshotRepository marketQuoteSnapshotRepository;
+    private final TradingSignalRepository tradingSignalRepository;
     private final ReanalysisLockService reanalysisLockService;
     private final StrategyConfigService strategyConfigService;
 
@@ -43,12 +48,14 @@ public class RiskPolicyService {
             PaperTradePositionRepository paperTradePositionRepository,
             AssetUniverseRepository assetUniverseRepository,
             MarketQuoteSnapshotRepository marketQuoteSnapshotRepository,
+            TradingSignalRepository tradingSignalRepository,
             ReanalysisLockService reanalysisLockService,
             StrategyConfigService strategyConfigService) {
         this.riskPolicyProperties = riskPolicyProperties;
         this.paperTradePositionRepository = paperTradePositionRepository;
         this.assetUniverseRepository = assetUniverseRepository;
         this.marketQuoteSnapshotRepository = marketQuoteSnapshotRepository;
+        this.tradingSignalRepository = tradingSignalRepository;
         this.reanalysisLockService = reanalysisLockService;
         this.strategyConfigService = strategyConfigService;
     }
@@ -112,9 +119,27 @@ public class RiskPolicyService {
     }
 
     public PaperTradeRiskDto portfolioRisk() {
-        BigDecimal capital = nvl(effectiveCapitalTotal());
+        return portfolioRisk(null);
+    }
+
+    public PaperTradeRiskDto portfolioRisk(BigDecimal capitalOverride) {
+        BigDecimal capital = nvl(capitalOverride != null && capitalOverride.compareTo(BigDecimal.ZERO) > 0
+                ? capitalOverride
+                : effectiveCapitalTotal());
         BigDecimal invested = computeInvestedAmount();
         BigDecimal cash = capital.subtract(invested);
+        List<PaperTradePositionEntity> positions = paperTradePositionRepository.findAll();
+        List<BuyLockStatusDto> locks = buyLocks();
+        StrategyPanelRiskSnapshot strategySnapshot = strategyPanelRiskSnapshot();
+        List<String> degradedAssets = dataQualityDegradedAssets(positions);
+        List<String> positionWarnings = positionLimitWarningAssets(invested, positions);
+        List<String> diversificationWarnings = portfolioDiversificationWarnings(invested);
+        List<Integer> buySplits = effectiveBuySplitRules();
+        List<Integer> sellSplits = effectiveSellSplitRules();
+        BigDecimal recommendedEntryRatioPct = recommendEntryRatioPct();
+        BigDecimal recommendedEntryAmount = capital.multiply(
+                        recommendedEntryRatioPct.divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP))
+                .setScale(2, RoundingMode.HALF_UP);
 
         return PaperTradeRiskDto.builder()
                 .capitalTotal(capital)
@@ -129,6 +154,23 @@ public class RiskPolicyService {
                 .positionExposure(exposureByAsset(invested))
                 .themeExposure(exposureByTheme(invested))
                 .countryExposure(exposureByCountry(invested))
+                .strategyActionDistribution(strategySnapshot.strategyActionDistribution())
+                .strategyBlockedCount(strategySnapshot.strategyBlockedCount())
+                .blockedReasonDistribution(strategySnapshot.blockedReasonDistribution())
+                .duplicateExposureStats(strategySnapshot.duplicateExposureStats())
+                .buyLockCount(locks.size())
+                .reanalysisPendingCount((int) locks.stream().filter(this::isReanalysisPending).count())
+                .dataQualityDegradedAssets(degradedAssets)
+                .positionLimitWarningAssets(positionWarnings)
+                .portfolioDiversificationWarning(!diversificationWarnings.isEmpty())
+                .portfolioDiversificationWarnings(diversificationWarnings)
+                .referenceOnly(true)
+                .referenceCapitalBasis(capital)
+                .recommendedEntryRatioPct(recommendedEntryRatioPct)
+                .recommendedEntryAmount(recommendedEntryAmount)
+                .recommendedBuySplitRatios(buySplits)
+                .recommendedSellSplitRatios(sellSplits)
+                .reanalysisLockMinutes(effectiveReanalysisLockMinutes())
                 .build();
     }
 
@@ -239,6 +281,156 @@ public class RiskPolicyService {
                 .collect(Collectors.toList());
     }
 
+    private StrategyPanelRiskSnapshot strategyPanelRiskSnapshot() {
+        List<TradingSignalEntity> recent = tradingSignalRepository.findByGeneratedAtAfterOrderByGeneratedAtDesc(
+                OffsetDateTime.now().minusHours(24),
+                org.springframework.data.domain.PageRequest.of(0, 400));
+
+        Map<String, Map<String, Long>> actionByStrategy = new LinkedHashMap<>();
+        Map<String, Long> blockedByStrategy = new LinkedHashMap<>();
+        Map<String, Long> blockedReasonDistribution = new LinkedHashMap<>();
+        Map<String, Long> duplicateStats = new LinkedHashMap<>();
+        duplicateStats.put("duplicate_asset_rows", 0L);
+        duplicateStats.put("duplicate_asset_window_rows", 0L);
+
+        Map<String, Integer> seenAsset = new HashMap<>();
+        Map<String, Integer> seenAssetWindow = new HashMap<>();
+        for (TradingSignalEntity row : recent) {
+            String strategy = strategyKey(row);
+            String action = row.getAction() == null ? "UNKNOWN" : row.getAction().name();
+            actionByStrategy.computeIfAbsent(strategy, k -> new LinkedHashMap<>())
+                    .merge(action, 1L, Long::sum);
+            if (row.getBlockedReason() != null && !row.getBlockedReason().isBlank()) {
+                blockedByStrategy.merge(strategy, 1L, Long::sum);
+                for (String token : row.getBlockedReason().split("\\|")) {
+                    String key = token == null || token.isBlank() ? "UNKNOWN" : token.trim();
+                    blockedReasonDistribution.merge(key, 1L, Long::sum);
+                }
+            }
+            String assetKey = row.getAssetCode() == null ? "" : row.getAssetCode();
+            if (!assetKey.isBlank()) {
+                seenAsset.merge(assetKey, 1, Integer::sum);
+                String windowKey = assetKey + "|" + (row.getSignalWindow() == null ? "N/A" : row.getSignalWindow());
+                seenAssetWindow.merge(windowKey, 1, Integer::sum);
+            }
+        }
+        duplicateStats.put(
+                "duplicate_asset_rows",
+                seenAsset.values().stream().filter(v -> v != null && v > 1).count());
+        duplicateStats.put(
+                "duplicate_asset_window_rows",
+                seenAssetWindow.values().stream().filter(v -> v != null && v > 1).count());
+
+        return new StrategyPanelRiskSnapshot(actionByStrategy, blockedByStrategy, blockedReasonDistribution, duplicateStats);
+    }
+
+    private String strategyKey(TradingSignalEntity row) {
+        String window = row == null || row.getSignalWindow() == null ? "" : row.getSignalWindow().trim().toLowerCase();
+        return switch (window) {
+            case "1h" -> "SCALP";
+            case "1w" -> "SWING";
+            case "6m" -> "DISCOVERY";
+            case "1m" -> "CHART_RESPONSE";
+            default -> "OTHER";
+        };
+    }
+
+    private boolean isReanalysisPending(BuyLockStatusDto dto) {
+        if (dto == null) {
+            return false;
+        }
+        if (dto.getLastReanalysisAt() == null) {
+            return true;
+        }
+        if (dto.getLockUntil() == null) {
+            return false;
+        }
+        return dto.getLastReanalysisAt().isBefore(dto.getLockUntil().minusMinutes(1));
+    }
+
+    private List<String> dataQualityDegradedAssets(List<PaperTradePositionEntity> positions) {
+        List<String> rows = new ArrayList<>();
+        for (PaperTradePositionEntity position : positions) {
+            String assetCode = position.getAssetCode();
+            AssetUniverseEntity asset = assetUniverseRepository.findById(assetCode).orElse(null);
+            if (asset == null) {
+                rows.add(assetCode + " (유니버스 누락)");
+                continue;
+            }
+            List<String> reasons = new ArrayList<>();
+            if (!Boolean.TRUE.equals(asset.getIsTradeEnabled())) {
+                reasons.add("trade_disabled");
+            }
+            if (asset.getLastQuoteReceivedAt() == null || asset.getLastQuoteReceivedAt().isBefore(OffsetDateTime.now().minusHours(3))) {
+                reasons.add("stale_quote");
+            }
+            if (asset.getVerificationStatus() != null && "FAILED".equals(asset.getVerificationStatus().name())) {
+                reasons.add("verification_failed");
+            }
+            if (!reasons.isEmpty()) {
+                rows.add(asset.getAssetName() + " (" + asset.getAssetCode() + "): " + String.join(",", reasons));
+            }
+        }
+        return rows.stream().limit(20).toList();
+    }
+
+    private List<String> positionLimitWarningAssets(BigDecimal invested, List<PaperTradePositionEntity> positions) {
+        BigDecimal limit = nvl(effectiveMaxPositionRatioPerAsset());
+        if (limit.compareTo(BigDecimal.ZERO) <= 0) {
+            return List.of();
+        }
+        BigDecimal warnLine = limit.multiply(BigDecimal.valueOf(0.85d)).setScale(6, RoundingMode.HALF_UP);
+        List<String> warnings = new ArrayList<>();
+        for (PaperTradePositionEntity position : positions) {
+            BigDecimal amount = positionAmount(position);
+            BigDecimal ratio = ratio(amount, invested);
+            if (ratio.compareTo(warnLine) >= 0) {
+                String name = assetUniverseRepository.findById(position.getAssetCode())
+                        .map(AssetUniverseEntity::getAssetName)
+                        .orElse(position.getAssetCode());
+                warnings.add(name + " (" + position.getAssetCode() + ") "
+                        + ratio.multiply(BigDecimal.valueOf(100)).setScale(2, RoundingMode.HALF_UP) + "%");
+            }
+        }
+        return warnings.stream().sorted().toList();
+    }
+
+    private List<String> portfolioDiversificationWarnings(BigDecimal invested) {
+        List<String> warnings = new ArrayList<>();
+        List<ExposureItemDto> assetExposure = exposureByAsset(invested);
+        List<ExposureItemDto> themeExposure = exposureByTheme(invested);
+        List<ExposureItemDto> countryExposure = exposureByCountry(invested);
+        BigDecimal assetLimit = nvl(effectiveMaxPositionRatioPerAsset());
+        BigDecimal themeLimit = nvl(effectiveMaxThemeExposureRatio());
+        BigDecimal countryLimit = nvl(effectiveMaxCountryExposureRatio());
+
+        if (!assetExposure.isEmpty() && assetLimit.compareTo(BigDecimal.ZERO) > 0
+                && nvl(assetExposure.get(0).getRatio()).compareTo(assetLimit.multiply(BigDecimal.valueOf(0.90d))) >= 0) {
+            warnings.add("상위 종목 비중이 종목 한도 90% 이상입니다.");
+        }
+        if (!themeExposure.isEmpty() && themeLimit.compareTo(BigDecimal.ZERO) > 0
+                && nvl(themeExposure.get(0).getRatio()).compareTo(themeLimit.multiply(BigDecimal.valueOf(0.90d))) >= 0) {
+            warnings.add("테마 집중도가 높아 분산 경고입니다.");
+        }
+        if (!countryExposure.isEmpty() && countryLimit.compareTo(BigDecimal.ZERO) > 0
+                && nvl(countryExposure.get(0).getRatio()).compareTo(countryLimit.multiply(BigDecimal.valueOf(0.90d))) >= 0) {
+            warnings.add("국가 집중도가 높아 분산 경고입니다.");
+        }
+        if (paperTradePositionRepository.findAll().stream()
+                .filter(position -> nvl(position.getQuantity()).compareTo(BigDecimal.ZERO) > 0)
+                .count() <= 1) {
+            warnings.add("보유 종목 수가 적어 몰빵 위험이 높습니다.");
+        }
+        return warnings;
+    }
+
+    private BigDecimal recommendEntryRatioPct() {
+        List<Integer> buySplits = effectiveBuySplitRules();
+        BigDecimal maxAssetPct = nvl(effectiveMaxPositionRatioPerAsset()).multiply(BigDecimal.valueOf(100));
+        BigDecimal splitPct = buySplits.isEmpty() ? BigDecimal.valueOf(20) : BigDecimal.valueOf(Math.max(1, buySplits.get(0)));
+        return splitPct.min(maxAssetPct.max(BigDecimal.valueOf(1))).setScale(2, RoundingMode.HALF_UP);
+    }
+
     private BigDecimal ratio(BigDecimal amount, BigDecimal total) {
         if (total == null || total.compareTo(BigDecimal.ZERO) <= 0) {
             return BigDecimal.ZERO;
@@ -312,5 +504,12 @@ public class RiskPolicyService {
         return strategyConfigService.getIntegerList(
                 "app.risk.sell-split-rules",
                 riskPolicyProperties.getSellSplitRules());
+    }
+
+    private record StrategyPanelRiskSnapshot(
+            Map<String, Map<String, Long>> strategyActionDistribution,
+            Map<String, Long> strategyBlockedCount,
+            Map<String, Long> blockedReasonDistribution,
+            Map<String, Long> duplicateExposureStats) {
     }
 }

@@ -30,6 +30,7 @@ import java.math.RoundingMode;
 import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -467,6 +468,28 @@ public class AdminDiagnosticsService {
         }
 
         Map<String, Object> data = new LinkedHashMap<>();
+        Map<String, Long> signalWindowDistribution = rows.stream().collect(Collectors.groupingBy(
+                row -> blankAs(row.getSignalWindow(), "UNKNOWN"),
+                LinkedHashMap::new,
+                Collectors.counting()));
+        Map<String, Map<String, Long>> actionDistributionByStrategy = rows.stream()
+                .collect(Collectors.groupingBy(
+                        row -> strategyWindowKey(row.getSignalWindow()),
+                        LinkedHashMap::new,
+                        Collectors.groupingBy(
+                                row -> row.getAction() == null ? "UNKNOWN" : row.getAction().name(),
+                                LinkedHashMap::new,
+                                Collectors.counting())));
+        Map<String, Map<String, Long>> blockedReasonByStrategy = new LinkedHashMap<>();
+        for (TradingSignalEntity row : rows) {
+            String strategy = strategyWindowKey(row.getSignalWindow());
+            Map<String, Long> dist = blockedReasonByStrategy.computeIfAbsent(strategy, k -> new LinkedHashMap<>());
+            String blocked = blankAs(row.getBlockedReason(), "NONE");
+            for (String token : blocked.split("\\|")) {
+                String key = token == null || token.isBlank() ? "NONE" : token.trim();
+                dist.merge(key, 1L, Long::sum);
+            }
+        }
         data.put("scope_country", blankAs(country, "ALL"));
         data.put("window_hours", Math.max(1, Math.min(hours, 72)));
         data.put("signal_count", rows.size());
@@ -489,6 +512,10 @@ public class AdminDiagnosticsService {
         data.put("blocked_reason_distribution", rows.stream().collect(Collectors.groupingBy(
                 row -> blankAs(row.getBlockedReason(), "NONE"),
                 Collectors.counting())));
+        data.put("signal_window_distribution", signalWindowDistribution);
+        data.put("action_distribution_by_strategy", actionDistributionByStrategy);
+        data.put("blocked_reason_distribution_by_strategy", blockedReasonByStrategy);
+        data.put("duplicate_exposure_stats", duplicateExposureStats(rows));
         return data;
     }
 
@@ -650,6 +677,33 @@ public class AdminDiagnosticsService {
         } catch (Exception ignored) {
             return List.of(rawJson);
         }
+    }
+
+    private Map<String, Long> duplicateExposureStats(List<TradingSignalEntity> rows) {
+        Map<String, Integer> byAsset = new HashMap<>();
+        Map<String, Integer> byAssetWindow = new HashMap<>();
+        for (TradingSignalEntity row : rows) {
+            if (isBlank(row.getAssetCode())) {
+                continue;
+            }
+            byAsset.merge(row.getAssetCode().trim(), 1, Integer::sum);
+            byAssetWindow.merge(row.getAssetCode().trim() + "|" + blankAs(row.getSignalWindow(), "N/A"), 1, Integer::sum);
+        }
+        Map<String, Long> result = new LinkedHashMap<>();
+        result.put("duplicate_asset_rows", byAsset.values().stream().filter(v -> v != null && v > 1).count());
+        result.put("duplicate_asset_window_rows", byAssetWindow.values().stream().filter(v -> v != null && v > 1).count());
+        return result;
+    }
+
+    private String strategyWindowKey(String signalWindow) {
+        String window = blankAs(signalWindow, "").trim().toLowerCase();
+        return switch (window) {
+            case "1h" -> "SCALP";
+            case "1w" -> "SWING";
+            case "1m" -> "CHART_RESPONSE";
+            case "6m" -> "DISCOVERY";
+            default -> blankAs(signalWindow, "UNKNOWN");
+        };
     }
 
     @SuppressWarnings("unchecked")

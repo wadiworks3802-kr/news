@@ -98,6 +98,33 @@ public class TradingSignalViewDto {
     @JsonProperty("theme_code")
     private String themeCode;
 
+    @JsonProperty("strategy_key")
+    private String strategyKey;
+
+    @JsonProperty("panel_purpose")
+    private String panelPurpose;
+
+    @JsonProperty("primary_metric_label")
+    private String primaryMetricLabel;
+
+    @JsonProperty("primary_metric_value")
+    private BigDecimal primaryMetricValue;
+
+    @JsonProperty("state_badge")
+    private String stateBadge;
+
+    @JsonProperty("state_reason")
+    private String stateReason;
+
+    @JsonProperty("recommendation_state")
+    private String recommendationState;
+
+    @JsonProperty("quality_degraded")
+    private Boolean qualityDegraded;
+
+    @JsonProperty("sort_basis")
+    private String sortBasis;
+
     @JsonProperty("generated_at")
     private OffsetDateTime generatedAt;
 }

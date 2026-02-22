@@ -11,6 +11,7 @@ import com.wangbyul.gnd.core.domain.SignalActionType;
 import com.wangbyul.gnd.core.repository.AssetUniverseRepository;
 import com.wangbyul.gnd.core.repository.MarketQuoteSnapshotRepository;
 import com.wangbyul.gnd.core.repository.PaperTradePositionRepository;
+import com.wangbyul.gnd.core.repository.TradingSignalRepository;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
@@ -40,6 +41,7 @@ class RiskPolicyServiceTest {
         strategyConfigService = Mockito.mock(StrategyConfigService.class);
         reanalysisLockService = Mockito.mock(ReanalysisLockService.class);
         MarketQuoteSnapshotRepository quoteRepository = Mockito.mock(MarketQuoteSnapshotRepository.class);
+        TradingSignalRepository tradingSignalRepository = Mockito.mock(TradingSignalRepository.class);
 
         RiskPolicyProperties props = new RiskPolicyProperties();
         props.setCapitalTotal(BigDecimal.valueOf(1_000_000L));
@@ -65,6 +67,7 @@ class RiskPolicyServiceTest {
                 positionRepository,
                 assetRepository,
                 quoteRepository,
+                tradingSignalRepository,
                 reanalysisLockService,
                 strategyConfigService);
     }

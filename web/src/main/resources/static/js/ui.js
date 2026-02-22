@@ -449,19 +449,35 @@ window.ui = {
       const bad = Number(row.bad_news_probability ?? 0).toFixed(3);
       const weekly = Number(row.weekly_context_score ?? 0).toFixed(3);
       const blocked = this.escapeHtml(row.blocked_reason || "");
+      const purpose = this.escapeHtml(row.panel_purpose || "");
+      const strategyKey = this.escapeHtml(row.strategy_key || "");
+      const stateBadge = this.escapeHtml(row.state_badge || "");
+      const stateReason = this.escapeHtml(row.state_reason || "");
+      const recommendationState = this.escapeHtml(row.recommendation_state || "");
+      const primaryMetricLabel = this.escapeHtml(row.primary_metric_label || "핵심지표");
+      const primaryMetricValue = Number(row.primary_metric_value ?? 0).toFixed(3);
+      const dedupApplied = Boolean(row.dedup_applied);
+      const qualityDegraded = Boolean(row.quality_degraded);
+      const badgeParts = [
+        stateBadge ? `<span class="badge">${stateBadge}</span>` : "",
+        recommendationState ? `<span class="badge">${recommendationState}</span>` : "",
+        dedupApplied ? `<span class="badge">중복억제</span>` : "",
+        qualityDegraded ? `<span class="badge">품질주의</span>` : ""
+      ].filter(Boolean).join("");
       return `
         <article class="signal-item">
           <div class="signal-top">
             <span class="signal-name">${name}</span>
             <span class="signal-action">${action}</span>
           </div>
+          ${(purpose || strategyKey) ? `<div class="signal-metrics"><span>${strategyKey || "STRATEGY"}</span><span>${purpose || "-"}</span>${badgeParts}</div>` : ""}
           <div class="signal-metrics">
+            <span>${primaryMetricLabel} ${primaryMetricValue}</span>
             <span>결합 ${combined}</span>
-            <span>호재 ${good}</span>
-            <span>악재 ${bad}</span>
-            <span>주간 ${weekly}</span>
+            <span>${row.strategy_key === "SCALP" ? `호/악 ${good}/${bad}` : `주간 ${weekly}`}</span>
             ${blocked ? `<span>차단 ${blocked}</span>` : ""}
           </div>
+          ${stateReason ? `<div class="signal-metrics"><span>${stateReason}</span></div>` : ""}
           ${signalId ? `<button class="signal-open-btn" type="button" data-signal-id="${signalId}">상세 보기</button>` : ""}
         </article>
       `;
@@ -485,6 +501,46 @@ window.ui = {
       `동시 보유 최대 ${Number(risk.max_open_positions ?? 0)}종목`,
       `익절 ${Number(risk.take_profit_pct ?? 0)}% / 손절 ${Number(risk.stop_loss_pct ?? 0)}%`
     ];
+    const strategyActionDistribution = risk.strategy_action_distribution || {};
+    const strategyBlockedCount = risk.strategy_blocked_count || {};
+    const blockedReasonDistribution = risk.blocked_reason_distribution || {};
+    const duplicateExposureStats = risk.duplicate_exposure_stats || {};
+    const strategySummary = Object.entries(strategyActionDistribution).map(([strategy, dist]) => {
+      const buy = Number(dist?.BUY_CANDIDATE || 0);
+      const sell = Number(dist?.SELL_CANDIDATE || 0);
+      const watch = Number(dist?.WATCH || 0);
+      const blocked = Number(strategyBlockedCount?.[strategy] || 0);
+      return `${strategy}: 추천(BUY/SELL) ${buy + sell}건, WATCH ${watch}건, 차단 ${blocked}건`;
+    });
+    if (strategySummary.length) {
+      items.push(...strategySummary.slice(0, 4));
+    }
+    items.push(`중복노출 통계: 자산중복 ${Number(duplicateExposureStats.duplicate_asset_rows || 0)}건 / 자산+윈도우중복 ${Number(duplicateExposureStats.duplicate_asset_window_rows || 0)}건`);
+    const topBlockedReasons = Object.entries(blockedReasonDistribution)
+      .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+      .slice(0, 3)
+      .map(([reason, count]) => `${reason}:${count}`);
+    if (topBlockedReasons.length) {
+      items.push(`차단 사유 상위: ${topBlockedReasons.join(", ")}`);
+    }
+    items.push(`BUY_LOCK ${Number(risk.buy_lock_count || 0)}건 / 재분석 대기 ${Number(risk.reanalysis_pending_count || 0)}건`);
+    const degradedAssets = Array.isArray(risk.data_quality_degraded_assets) ? risk.data_quality_degraded_assets : [];
+    if (degradedAssets.length) {
+      items.push(`품질저하 종목 ${degradedAssets.length}건 (상위: ${degradedAssets.slice(0, 2).join(" | ")})`);
+    }
+    const positionWarnings = Array.isArray(risk.position_limit_warning_assets) ? risk.position_limit_warning_assets : [];
+    if (positionWarnings.length) {
+      items.push(`종목 비중 경고 ${positionWarnings.length}건 (상위: ${positionWarnings.slice(0, 2).join(" | ")})`);
+    }
+    const divWarnings = Array.isArray(risk.portfolio_diversification_warnings) ? risk.portfolio_diversification_warnings : [];
+    if (divWarnings.length) {
+      items.push(`분산 경고: ${divWarnings.slice(0, 2).join(" / ")}`);
+    }
+    if (risk.reference_only) {
+      items.push(
+        `참고용 제안(실주문 아님): 기준자금 ${Number(risk.reference_capital_basis || 0).toLocaleString()}, 1회 진입 ${Number(risk.recommended_entry_ratio_pct || 0).toFixed(1)}% (~${Number(risk.recommended_entry_amount || 0).toLocaleString()}), 분할매수 ${JSON.stringify(risk.recommended_buy_split_ratios || [])}, 재분석락 ${Number(risk.reanalysis_lock_minutes || 0)}분`
+      );
+    }
     if (backtestReport) {
       items.push(`백테스트 요약: ${backtestReport.summary || "-"}`);
       items.push(`정책 전/후 MDD: ${Number(backtestReport.before_policy_mdd ?? 0).toFixed(4)} -> ${Number(backtestReport.after_policy_mdd ?? 0).toFixed(4)}`);
@@ -643,11 +699,15 @@ window.ui = {
     `);
 
     const signalItems = Array.isArray(signalAudit.items) ? signalAudit.items.slice(0, 6) : [];
+    const signalByStrategy = signalConfidence.action_distribution_by_strategy || {};
+    const duplicateSignalStats = signalConfidence.duplicate_exposure_stats || {};
     $("#admin-signals").html(`
       <div class="admin-kv">감사 로그 ${Number(signalAudit.count || 0)}건 / 차단 ${Number(signalAudit.blocked_count || 0)}건</div>
       <div class="admin-kv">미래데이터 차단 ${Number(signalAlignment.future_data_blocked_count || 0)}건</div>
       <div class="admin-kv">번역지연 ${Number(signalAlignment.translation_delayed_count || 0)}건</div>
       <div class="admin-kv">저신뢰 시그널 ${Number(signalConfidence.low_confidence_count || 0)}건</div>
+      <div class="admin-kv">전략별 액션 분포 ${this.escapeHtml(JSON.stringify(signalByStrategy))}</div>
+      <div class="admin-kv">중복노출 통계 ${this.escapeHtml(JSON.stringify(duplicateSignalStats))}</div>
       ${signalItems.map((row) => `
         <div class="admin-row">
           <span>${this.escapeHtml(row.asset_code || "-")}</span>

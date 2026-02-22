@@ -71,6 +71,15 @@ public class SignalFusionService {
         boolean chartGood = chart.chartConfidence().compareTo(signalPolicyProperties.getFusionChartGoodThreshold()) >= 0;
         boolean chartWeak = chart.chartConfidence().compareTo(signalPolicyProperties.getFusionChartWeakThreshold()) <= 0;
         boolean highConfidence = combined.compareTo(signalPolicyProperties.getFusionHighConfidenceThreshold()) >= 0;
+        boolean pressureNeutralizedByVolumeSame = pressure.volumeRegimeSame()
+                && (pressure.buyPressureDetected() || pressure.sellPressureDetected())
+                && !pressure.buyPressurePositive()
+                && !pressure.sellPressureNegative();
+
+        // 사용자 규칙: 거래량 동일 구간의 연속 매수/매도는 자동 호재/악재 단정 금지
+        if (pressureNeutralizedByVolumeSame) {
+            return SignalActionType.WATCH;
+        }
 
         // 정책: 뉴스와 차트가 둘 다 있어야 적극 BUY 후보 생성
         if (newsGood && chartGood && pressure.buyPressurePositive() && highConfidence) {

@@ -8,6 +8,11 @@ import com.wangbyul.gnd.api.dto.SignalDetailDto;
 import com.wangbyul.gnd.api.dto.TradingSignalViewDto;
 import com.wangbyul.gnd.api.dto.WeeklyContextDto;
 import com.wangbyul.gnd.api.service.SystemFeatureToggleService;
+import com.wangbyul.gnd.api.service.signal.panel.ChartResponseStrategyService;
+import com.wangbyul.gnd.api.service.signal.panel.DiscoveryStrategyService;
+import com.wangbyul.gnd.api.service.signal.panel.PanelStrategyEvaluation;
+import com.wangbyul.gnd.api.service.signal.panel.ScalpStrategyService;
+import com.wangbyul.gnd.api.service.signal.panel.SwingStrategyService;
 import com.wangbyul.gnd.api.service.signal.model.ChartPositionResult;
 import com.wangbyul.gnd.api.service.signal.model.DiscoveryResult;
 import com.wangbyul.gnd.api.service.signal.model.FusionSignalResult;
@@ -73,6 +78,10 @@ public class TradingSignalEngineService {
     private final ObjectMapper objectMapper;
     private final SignalPolicyProperties signalPolicyProperties;
     private final SystemFeatureToggleService systemFeatureToggleService;
+    private final ScalpStrategyService scalpStrategyService;
+    private final SwingStrategyService swingStrategyService;
+    private final ChartResponseStrategyService chartResponseStrategyService;
+    private final DiscoveryStrategyService discoveryStrategyService;
 
     @Value("${app.universe.panel-max-same-family:1}")
     private int panelMaxSameFamily;
@@ -104,7 +113,11 @@ public class TradingSignalEngineService {
             SignalReasonBuilder signalReasonBuilder,
             ObjectMapper objectMapper,
             SignalPolicyProperties signalPolicyProperties,
-            SystemFeatureToggleService systemFeatureToggleService) {
+            SystemFeatureToggleService systemFeatureToggleService,
+            ScalpStrategyService scalpStrategyService,
+            SwingStrategyService swingStrategyService,
+            ChartResponseStrategyService chartResponseStrategyService,
+            DiscoveryStrategyService discoveryStrategyService) {
         this.assetUniverseRepository = assetUniverseRepository;
         this.tradingSignalRepository = tradingSignalRepository;
         this.strategyRunRepository = strategyRunRepository;
@@ -123,6 +136,10 @@ public class TradingSignalEngineService {
         this.objectMapper = objectMapper;
         this.signalPolicyProperties = signalPolicyProperties;
         this.systemFeatureToggleService = systemFeatureToggleService;
+        this.scalpStrategyService = scalpStrategyService;
+        this.swingStrategyService = swingStrategyService;
+        this.chartResponseStrategyService = chartResponseStrategyService;
+        this.discoveryStrategyService = discoveryStrategyService;
     }
 
     @Transactional
@@ -197,35 +214,32 @@ public class TradingSignalEngineService {
 
     public List<TradingSignalViewDto> getScalpSignals(String country, String theme, int limit) {
         ensureRecentSignals(country, theme, Math.max(limit, 20), StrategyRunType.SCALP);
-        List<SignalActionType> actions = List.of(SignalActionType.BUY_CANDIDATE, SignalActionType.SELL_CANDIDATE, SignalActionType.WATCH);
-        return queryPanelSignals(country, theme, actions, limit, PanelType.SCALP, "1h");
+        return queryPanelSignals(country, theme, scalpStrategyService.allowedActions(), limit, PanelType.SCALP, scalpStrategyService.signalWindow());
     }
 
     public List<TradingSignalViewDto> getSwingSignals(String country, String theme, int limit) {
         ensureRecentSignals(country, theme, Math.max(limit, 20), StrategyRunType.SWING);
-        List<SignalActionType> actions = List.of(SignalActionType.BUY_CANDIDATE, SignalActionType.SELL_CANDIDATE, SignalActionType.HOLD, SignalActionType.WATCH);
-        return queryPanelSignals(country, theme, actions, limit, PanelType.SWING, "1w");
+        return queryPanelSignals(country, theme, swingStrategyService.allowedActions(), limit, PanelType.SWING, swingStrategyService.signalWindow());
     }
 
     public TradingSignalViewDto getPositionSignal(String assetCode) {
-        tradingSignalRepository.findTop1ByAssetCodeAndSignalWindowOrderByGeneratedAtDesc(assetCode, "1m")
+        tradingSignalRepository.findTop1ByAssetCodeAndSignalWindowOrderByGeneratedAtDesc(assetCode, chartResponseStrategyService.signalWindow())
                 .orElseGet(() -> {
                     AssetUniverseEntity asset = assetUniverseRepository.findById(assetCode)
                             .orElseThrow(() -> new IllegalArgumentException("asset not found: " + assetCode));
                     return computeAndSave(asset, StrategyRunType.POSITION);
                 });
-        TradingSignalEntity signal = tradingSignalRepository.findTop1ByAssetCodeAndSignalWindowOrderByGeneratedAtDesc(assetCode, "1m")
+        TradingSignalEntity signal = tradingSignalRepository.findTop1ByAssetCodeAndSignalWindowOrderByGeneratedAtDesc(assetCode, chartResponseStrategyService.signalWindow())
                 .or(() -> tradingSignalRepository.findTop1ByAssetCodeOrderByGeneratedAtDesc(assetCode))
                 .orElseThrow(() -> new IllegalArgumentException("signal not found: " + assetCode));
         AssetUniverseEntity asset = assetUniverseRepository.findById(signal.getAssetCode()).orElse(null);
-        return toViewDto(signal, asset, PanelSelectionMeta.forPosition());
+        PanelStrategyEvaluation eval = chartResponseStrategyService.evaluate(signal, asset);
+        return toViewDto(signal, asset, PanelSelectionMeta.forPosition(eval));
     }
 
     public List<TradingSignalViewDto> getDiscoverySignals(String country, String theme, int limit) {
         ensureRecentSignals(country, theme, Math.max(limit, 30), StrategyRunType.DISCOVERY);
-        List<SignalActionType> actions = List.of(
-                SignalActionType.BUY_CANDIDATE, SignalActionType.WATCH, SignalActionType.HOLD, SignalActionType.SELL_CANDIDATE);
-        return queryPanelSignals(country, theme, actions, limit, PanelType.DISCOVERY, "6m");
+        return queryPanelSignals(country, theme, discoveryStrategyService.allowedActions(), limit, PanelType.DISCOVERY, discoveryStrategyService.signalWindow());
     }
 
     public WeeklyContextDto getWeeklyContext(String assetCode) {
@@ -615,12 +629,14 @@ public class TradingSignalEngineService {
             TradingSignalEntity signal,
             AssetUniverseEntity asset,
             String normalizedThemeFilter) {
-        BigDecimal score = panelSignalScore(panelType, signal);
+        PanelStrategyEvaluation strategyEval = evaluatePanelStrategy(panelType, signal, asset);
+        BigDecimal score = scale(strategyEval.panelSignalScore());
         BigDecimal universeScore = scale(asset.getSelectionScore());
         BigDecimal diversity = scale(asset.getDiversityScore());
         BigDecimal displayWeight = BigDecimal.valueOf(asset.getDisplayWeight() == null ? 0 : asset.getDisplayWeight());
-        BigDecimal layerBonus = layerBonus(panelType, asset.getUniverseLayer());
+        BigDecimal layerBonus = scale(strategyEval.layerBonus());
         BigDecimal stalePenalty = stalePenalty(asset);
+        BigDecimal qualityPenalty = strategyEval.qualityDegraded() ? BigDecimal.valueOf(0.06d) : BigDecimal.ZERO;
         BigDecimal priorityBonus = isPriorityTheme(asset.getThemeCode()) ? BigDecimal.valueOf(0.05d) : BigDecimal.ZERO;
 
         BigDecimal total = score.multiply(BigDecimal.valueOf(0.55d), MathContext.DECIMAL64)
@@ -630,19 +646,26 @@ public class TradingSignalEngineService {
                 .add(displayWeight.divide(BigDecimal.valueOf(1000), 6, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(0.05d), MathContext.DECIMAL64))
                 .add(layerBonus)
                 .add(priorityBonus)
-                .subtract(stalePenalty);
+                .subtract(stalePenalty)
+                .subtract(qualityPenalty);
 
         StringBuilder reason = new StringBuilder();
         reason.append("panel=").append(panelType.name().toLowerCase(Locale.ROOT));
+        reason.append(",strategy_key=").append(strategyEval.strategyKey());
         reason.append(",signal_window=").append(signal.getSignalWindow());
         reason.append(",panel_score=").append(scale(score));
         reason.append(",combined=").append(scale(signal.getCombinedConfidence()));
+        reason.append(",panel_purpose=").append(trimForMeta(strategyEval.panelPurpose(), 40));
+        reason.append(",primary_metric=").append(strategyEval.primaryMetricLabel())
+                .append(":").append(scale(strategyEval.primaryMetricValue()));
+        reason.append(",state=").append(strategyEval.stateBadge());
         reason.append(",universe_score=").append(scale(universeScore));
         reason.append(",layer=").append(asset.getUniverseLayer() == null ? "N/A" : asset.getUniverseLayer().name());
         reason.append(",theme_code=").append(safeString(asset.getThemeCode(), "N/A"));
         reason.append(",priority_theme=").append(isPriorityTheme(asset.getThemeCode()));
         reason.append(",trade_enabled=").append(Boolean.TRUE.equals(asset.getIsTradeEnabled()));
         reason.append(",stale_penalty=").append(scale(stalePenalty));
+        reason.append(",quality_penalty=").append(scale(qualityPenalty));
         if (asset.getSelectionReason() != null && !asset.getSelectionReason().isBlank()) {
             reason.append(",universe_reason=[").append(trimForMeta(asset.getSelectionReason(), 120)).append("]");
         }
@@ -653,8 +676,29 @@ public class TradingSignalEngineService {
                 false,
                 scale(total.max(BigDecimal.ZERO).min(BigDecimal.ONE)),
                 !isBlank(normalizedThemeFilter) && isPriorityTheme(normalizedThemeFilter),
-                safeString(asset.getThemeCode(), null));
+                safeString(asset.getThemeCode(), null),
+                strategyEval.strategyKey(),
+                strategyEval.panelPurpose(),
+                strategyEval.primaryMetricLabel(),
+                scale(strategyEval.primaryMetricValue()),
+                strategyEval.stateBadge(),
+                strategyEval.stateReason(),
+                strategyEval.recommendationState(),
+                strategyEval.qualityDegraded(),
+                strategyEval.sortBasis());
         return new PanelCandidate(signal, asset, total, meta);
+    }
+
+    private PanelStrategyEvaluation evaluatePanelStrategy(
+            PanelType panelType,
+            TradingSignalEntity signal,
+            AssetUniverseEntity asset) {
+        return switch (panelType) {
+            case SCALP -> scalpStrategyService.evaluate(signal, asset);
+            case SWING -> swingStrategyService.evaluate(signal, asset);
+            case POSITION -> chartResponseStrategyService.evaluate(signal, asset);
+            case DISCOVERY -> discoveryStrategyService.evaluate(signal, asset);
+        };
     }
 
     private BigDecimal panelSignalScore(PanelType panelType, TradingSignalEntity signal) {
@@ -745,6 +789,15 @@ public class TradingSignalEngineService {
                 .diversityScore(panelMeta == null ? null : panelMeta.diversityScore())
                 .coreThemeFilterApplied(panelMeta == null ? null : panelMeta.coreThemeFilterApplied())
                 .themeCode(panelMeta == null ? null : panelMeta.themeCode())
+                .strategyKey(panelMeta == null ? null : panelMeta.strategyKey())
+                .panelPurpose(panelMeta == null ? null : panelMeta.panelPurpose())
+                .primaryMetricLabel(panelMeta == null ? null : panelMeta.primaryMetricLabel())
+                .primaryMetricValue(panelMeta == null ? null : panelMeta.primaryMetricValue())
+                .stateBadge(panelMeta == null ? null : panelMeta.stateBadge())
+                .stateReason(panelMeta == null ? null : panelMeta.stateReason())
+                .recommendationState(panelMeta == null ? null : panelMeta.recommendationState())
+                .qualityDegraded(panelMeta == null ? null : panelMeta.qualityDegraded())
+                .sortBasis(panelMeta == null ? null : panelMeta.sortBasis())
                 .generatedAt(signal.getGeneratedAt())
                 .build();
     }
@@ -1112,10 +1165,34 @@ public class TradingSignalEngineService {
             boolean dedupApplied,
             BigDecimal diversityScore,
             boolean coreThemeFilterApplied,
-            String themeCode) {
+            String themeCode,
+            String strategyKey,
+            String panelPurpose,
+            String primaryMetricLabel,
+            BigDecimal primaryMetricValue,
+            String stateBadge,
+            String stateReason,
+            String recommendationState,
+            Boolean qualityDegraded,
+            String sortBasis) {
 
-        static PanelSelectionMeta forPosition() {
-            return new PanelSelectionMeta(null, "panel=position,direct_asset_lookup=true", false, BigDecimal.ZERO, false, null);
+        static PanelSelectionMeta forPosition(PanelStrategyEvaluation eval) {
+            return new PanelSelectionMeta(
+                    null,
+                    "panel=position,direct_asset_lookup=true",
+                    false,
+                    BigDecimal.ZERO,
+                    false,
+                    null,
+                    eval == null ? "CHART_RESPONSE" : eval.strategyKey(),
+                    eval == null ? "차트 대응/압력 확인" : eval.panelPurpose(),
+                    eval == null ? "포지션관리" : eval.primaryMetricLabel(),
+                    eval == null ? BigDecimal.ZERO : eval.primaryMetricValue(),
+                    eval == null ? "관찰" : eval.stateBadge(),
+                    eval == null ? "단일 자산 직접 조회" : eval.stateReason(),
+                    eval == null ? "WATCH_ONLY" : eval.recommendationState(),
+                    eval != null && eval.qualityDegraded(),
+                    eval == null ? "position_signal>chart_confidence" : eval.sortBasis());
         }
 
         static PanelSelectionMeta fallback(PanelType panelType, String themeCode) {
@@ -1125,7 +1202,16 @@ public class TradingSignalEngineService {
                     true,
                     BigDecimal.ZERO,
                     !isBlankStatic(themeCode) && isPriorityThemeStatic(themeCode),
-                    themeCode);
+                    themeCode,
+                    panelType.name(),
+                    panelType.name().toLowerCase(Locale.ROOT) + " fallback",
+                    "점수",
+                    BigDecimal.ZERO,
+                    "fallback",
+                    "엄격한 중복 억제로 인해 fallback 선택",
+                    "WATCH_ONLY",
+                    true,
+                    "fallback:generated_at");
         }
 
         PanelSelectionMeta withDedupApplied(boolean value) {
@@ -1135,7 +1221,16 @@ public class TradingSignalEngineService {
                     value,
                     diversityScore,
                     coreThemeFilterApplied,
-                    themeCode);
+                    themeCode,
+                    strategyKey,
+                    panelPurpose,
+                    primaryMetricLabel,
+                    primaryMetricValue,
+                    stateBadge,
+                    stateReason,
+                    recommendationState,
+                    qualityDegraded,
+                    sortBasis);
         }
 
         private static boolean isBlankStatic(String value) {

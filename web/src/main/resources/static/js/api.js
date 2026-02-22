@@ -104,9 +104,10 @@ window.api = {
     }
     return body;
   },
-  async getPortfolioRisk(options = {}) {
+  async getPortfolioRisk(params = {}, options = {}) {
     const base = window.API_BASE || "http://localhost:8080";
-    const res = await fetch(`${base}/api/paper-trade/risk/portfolio`, { signal: options.signal });
+    const qs = params && Object.keys(params).length ? `?${new URLSearchParams(params).toString()}` : "";
+    const res = await fetch(`${base}/api/paper-trade/risk/portfolio${qs}`, { signal: options.signal });
     const body = await res.json();
     if (!res.ok) {
       throw body;

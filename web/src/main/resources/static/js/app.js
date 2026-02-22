@@ -138,7 +138,7 @@ async function loadAdvancedPanels(seq) {
         period: "6m",
         limit: 8
       }, { signal: discoveryController.signal }).finally(() => removeController(discoveryController)),
-      api.getPortfolioRisk({ signal: riskController.signal }).finally(() => removeController(riskController)),
+      api.getPortfolioRisk({}, { signal: riskController.signal }).finally(() => removeController(riskController)),
       api.getLocks({ signal: lockController.signal }).finally(() => removeController(lockController)),
       api.getBacktestComparison({
         country: store.state.country,
@@ -150,11 +150,19 @@ async function loadAdvancedPanels(seq) {
       return;
     }
 
-    const positionAssetCode =
-      scalpRes?.data?.[0]?.asset_code
-      || swingRes?.data?.[0]?.asset_code
-      || discoveryRes?.data?.[0]?.asset_code
-      || "";
+    const scalpRows = Array.isArray(scalpRes?.data) ? scalpRes.data : [];
+    const swingRows = Array.isArray(swingRes?.data) ? swingRes.data : [];
+    const discoveryRows = Array.isArray(discoveryRes?.data) ? discoveryRes.data : [];
+    const preferredPositionCandidate =
+      swingRows.find((row) => row?.asset_code && !scalpRows.some((s) => s?.asset_code === row.asset_code))
+      || discoveryRows.find((row) => row?.asset_code
+        && !scalpRows.some((s) => s?.asset_code === row.asset_code)
+        && !swingRows.some((s) => s?.asset_code === row.asset_code))
+      || scalpRows[0]
+      || swingRows[0]
+      || discoveryRows[0]
+      || null;
+    const positionAssetCode = preferredPositionCandidate?.asset_code || "";
 
     let positionRes = null;
     if (positionAssetCode) {

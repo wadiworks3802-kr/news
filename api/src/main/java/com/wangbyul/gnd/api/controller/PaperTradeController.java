@@ -4,10 +4,12 @@ import com.wangbyul.gnd.api.dto.BuyLockStatusDto;
 import com.wangbyul.gnd.api.dto.PaperTradeRiskDto;
 import com.wangbyul.gnd.api.service.signal.RiskPolicyService;
 import com.wangbyul.gnd.core.dto.ApiEnvelope;
+import java.math.BigDecimal;
 import java.util.List;
 import org.slf4j.MDC;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -27,10 +29,14 @@ public class PaperTradeController {
     }
 
     @GetMapping("/risk/portfolio")
-    public ApiEnvelope<PaperTradeRiskDto> getPortfolioRisk() {
+    public ApiEnvelope<PaperTradeRiskDto> getPortfolioRisk(
+            @RequestParam(name = "capital_total", required = false) BigDecimal capitalTotal) {
         return ApiEnvelope.<PaperTradeRiskDto>builder()
-                .data(riskPolicyService.portfolioRisk())
-                .meta(java.util.Map.of("policy_mode", "NO_ALL_IN"))
+                .data(riskPolicyService.portfolioRisk(capitalTotal))
+                .meta(java.util.Map.of(
+                        "policy_mode", "NO_ALL_IN",
+                        "reference_only", true,
+                        "capital_total_input_applied", capitalTotal != null))
                 .traceId(traceId())
                 .build();
     }
@@ -49,4 +55,3 @@ public class PaperTradeController {
         return trace == null ? "" : trace;
     }
 }
-
