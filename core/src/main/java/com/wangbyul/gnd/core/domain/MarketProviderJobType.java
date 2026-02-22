@@ -9,6 +9,6 @@ package com.wangbyul.gnd.core.domain;
 public enum MarketProviderJobType {
     QUOTE,
     BAR,
+    HEALTH_CHECK,
     LINK
 }
-

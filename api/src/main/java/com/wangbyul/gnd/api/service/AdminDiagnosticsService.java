@@ -16,6 +16,9 @@ import com.wangbyul.gnd.core.repository.ApiResponseAuditRepository;
 import com.wangbyul.gnd.core.repository.AssetUniverseRepository;
 import com.wangbyul.gnd.core.repository.MarketDataGapEventRepository;
 import com.wangbyul.gnd.core.repository.MarketDataQualitySnapshotRepository;
+import com.wangbyul.gnd.core.repository.MarketPriceBarRepository;
+import com.wangbyul.gnd.core.repository.MarketProviderJobRepository;
+import com.wangbyul.gnd.core.repository.MarketQuoteSnapshotRepository;
 import com.wangbyul.gnd.core.repository.SignalAuditLogRepository;
 import com.wangbyul.gnd.core.repository.StrategyRunRepository;
 import com.wangbyul.gnd.core.repository.TradingSignalRepository;
@@ -58,6 +61,9 @@ public class AdminDiagnosticsService {
     private final MarketDataQualitySnapshotRepository marketDataQualitySnapshotRepository;
     private final MarketDataGapEventRepository marketDataGapEventRepository;
     private final ApiResponseAuditRepository apiResponseAuditRepository;
+    private final MarketProviderJobRepository marketProviderJobRepository;
+    private final MarketQuoteSnapshotRepository marketQuoteSnapshotRepository;
+    private final MarketPriceBarRepository marketPriceBarRepository;
     private final SignalAuditLogRepository signalAuditLogRepository;
     private final TradingSignalRepository tradingSignalRepository;
     private final StrategyRunRepository strategyRunRepository;
@@ -73,18 +79,43 @@ public class AdminDiagnosticsService {
 
     public Map<String, Object> getMarketCollectionSummary(String country, String provider, int hours) {
         OffsetDateTime since = OffsetDateTime.now().minusHours(Math.max(1, Math.min(hours, 72)));
+        String providerKey = isBlank(provider) ? null : provider.trim().toLowerCase();
         List<MarketDataQualitySnapshotEntity> rows = marketDataQualitySnapshotRepository
                 .findBySnapshotTimeUtcAfterOrderBySnapshotTimeUtcDesc(since)
                 .stream()
                 .filter(row -> isBlank(country) || eqIgnoreCase(row.getCountry(), country))
                 .filter(row -> isBlank(provider) || eqIgnoreCase(row.getProvider(), provider))
                 .toList();
+        var providerJobs = (isBlank(provider)
+                ? marketProviderJobRepository.findTop300ByScheduledAtAfterOrderByScheduledAtDesc(since)
+                : marketProviderJobRepository.findTop300ByProviderNameAndScheduledAtAfterOrderByScheduledAtDesc(providerKey, since))
+                .stream()
+                .filter(job -> isBlank(provider) || eqIgnoreCase(job.getProviderName(), provider))
+                .toList();
+        long quoteCount = isBlank(provider)
+                ? marketQuoteSnapshotRepository.countByCreatedAtAfter(since)
+                : marketQuoteSnapshotRepository.countByProviderNameAndCreatedAtAfter(providerKey, since);
+        long barCount = isBlank(provider)
+                ? marketPriceBarRepository.countByCreatedAtAfter(since)
+                : marketPriceBarRepository.countByProviderNameAndCreatedAtAfter(providerKey, since);
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("scope_country", blankAs(country, "ALL"));
         data.put("scope_provider", blankAs(provider, "ALL"));
         data.put("window_hours", Math.max(1, Math.min(hours, 72)));
         data.put("snapshot_count", rows.size());
+        data.put("provider_job_count", providerJobs.size());
+        data.put("provider_job_success_count", providerJobs.stream()
+                .filter(job -> job.getStatus() != null && "SUCCESS".equals(job.getStatus().name()))
+                .count());
+        data.put("provider_job_failed_count", providerJobs.stream()
+                .filter(job -> job.getStatus() != null && "FAILED".equals(job.getStatus().name()))
+                .count());
+        data.put("provider_job_empty_response_count", providerJobs.stream()
+                .filter(job -> Boolean.TRUE.equals(job.getEmptyResponse()))
+                .count());
+        data.put("quote_snapshot_count", quoteCount);
+        data.put("price_bar_count", barCount);
         data.put("unresolved_gap_count", marketDataGapEventRepository.countByResolvedFalse());
         data.put("avg_quality_score", avg(rows, MarketDataQualitySnapshotEntity::getQualityScore, 2));
         data.put("avg_missing_rate", avg(rows, MarketDataQualitySnapshotEntity::getMissingRate, 6));
@@ -92,6 +123,7 @@ public class AdminDiagnosticsService {
         data.put("avg_duplicate_rate", avg(rows, MarketDataQualitySnapshotEntity::getDuplicateRate, 6));
         data.put("avg_anomaly_rate", avg(rows, MarketDataQualitySnapshotEntity::getAnomalyRate, 6));
         data.put("latest_snapshot_time_utc", rows.isEmpty() ? null : rows.get(0).getSnapshotTimeUtc());
+        data.put("latest_provider_job_time_utc", providerJobs.isEmpty() ? null : providerJobs.get(0).getScheduledAt());
 
         Map<String, Object> health = rows.stream()
                 .collect(Collectors.groupingBy(row -> blankAs(row.getProvider(), "UNKNOWN")))
@@ -108,6 +140,34 @@ public class AdminDiagnosticsService {
                         },
                         (a, b) -> a,
                         LinkedHashMap::new));
+        if (health.isEmpty() && !providerJobs.isEmpty()) {
+            health = providerJobs.stream()
+                    .collect(Collectors.groupingBy(job -> blankAs(job.getProviderName(), "UNKNOWN")))
+                    .entrySet()
+                    .stream()
+                    .collect(Collectors.toMap(
+                            Map.Entry::getKey,
+                            entry -> {
+                                long failed = entry.getValue().stream()
+                                        .filter(job -> job.getStatus() != null && "FAILED".equals(job.getStatus().name()))
+                                        .count();
+                                long empty = entry.getValue().stream().filter(job -> Boolean.TRUE.equals(job.getEmptyResponse())).count();
+                                String status = failed > 0 ? "WARN" : "HEALTHY";
+                                if (entry.getValue().stream().allMatch(job -> job.getStatus() != null && "FAILED".equals(job.getStatus().name()))) {
+                                    status = "DOWN";
+                                }
+                                Map<String, Object> item = new LinkedHashMap<>();
+                                item.put("avg_quality_score", BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+                                item.put("snapshot_count", 0);
+                                item.put("job_count", entry.getValue().size());
+                                item.put("failed_job_count", failed);
+                                item.put("empty_response_count", empty);
+                                item.put("status", status);
+                                return item;
+                            },
+                            (a, b) -> a,
+                            LinkedHashMap::new));
+        }
         data.put("provider_health", health);
         return data;
     }

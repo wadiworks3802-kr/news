@@ -1,6 +1,7 @@
 package com.wangbyul.gnd.core.repository;
 
 import com.wangbyul.gnd.core.domain.MarketPriceBarEntity;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -18,4 +19,8 @@ public interface MarketPriceBarRepository extends JpaRepository<MarketPriceBarEn
     Optional<MarketPriceBarEntity> findTop1ByAssetCodeAndTimeframeOrderByBarTimeDesc(String assetCode, String timeframe);
 
     List<MarketPriceBarEntity> findTop2ByAssetCodeAndTimeframeOrderByBarTimeDesc(String assetCode, String timeframe);
+
+    long countByCreatedAtAfter(OffsetDateTime since);
+
+    long countByProviderNameAndCreatedAtAfter(String providerName, OffsetDateTime since);
 }

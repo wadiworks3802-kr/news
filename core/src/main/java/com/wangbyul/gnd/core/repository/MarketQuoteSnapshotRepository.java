@@ -1,6 +1,7 @@
 package com.wangbyul.gnd.core.repository;
 
 import com.wangbyul.gnd.core.domain.MarketQuoteSnapshotEntity;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -16,4 +17,8 @@ public interface MarketQuoteSnapshotRepository extends JpaRepository<MarketQuote
     Optional<MarketQuoteSnapshotEntity> findTop1ByAssetCodeOrderBySnapshotUtcDesc(String assetCode);
 
     List<MarketQuoteSnapshotEntity> findTop2ByAssetCodeOrderBySnapshotUtcDesc(String assetCode);
+
+    long countByCreatedAtAfter(OffsetDateTime since);
+
+    long countByProviderNameAndCreatedAtAfter(String providerName, OffsetDateTime since);
 }

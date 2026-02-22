@@ -156,3 +156,13 @@
 - [T149] 운영 이슈 수정: Rocky Linux `systemd`에서 홈 경로 스크립트 직접 실행 시 `gnd-h2.service` `203/EXEC` 오류를 `ExecStart=/usr/bin/bash .../run-h2-tcp-server.sh`로 보정.
 - [T150] 운영 이슈 수정: 과거 수동 H2 TCP 프로세스(`org.h2.tools.Server`, PID 659071)가 9092를 점유해 `gnd-h2` 재기동 실패한 문제를 종료 후 `gnd-h2` systemd 서비스로 대체.
 - [T151] 전환 검증 완료: API/BATCH가 `jdbc:h2:tcp://127.0.0.1:9092///home/was/gnd-news/.data/gnd`로 연결되는 것(Hikari 로그) 확인, `GET /api/news` 200 및 H2 Shell TCP 쿼리(`select count(*) from news`) 성공.
+- [T152] 시장데이터 수집 1차 착수: PROMPT-8-REBUILD 기준 "Provider 추상화 + 정규화 + 수집 감사" 범위 상세 설계 및 기존 진단 API/도메인 재사용 전략 확정.
+- [T153] Provider 추상화 계층 추가: `MarketDataProvider` 인터페이스, 표준 DTO(`quote/bar/meta/health/fetchResult`), `MarketDataProviderRouter`, `MarketProviderProperties(app.market.provider.*)` 구현.
+- [T154] Provider 구현 추가: `MockMarketDataProvider`(실제 저장 가능한 표준 시세/바 생성), `TossMcpMarketDataProvider` 실패 스텁, `KiwoomRestMarketDataProvider` 빈응답 스텁 구현으로 장애/빈응답 fallback 경로 검증 기반 확보.
+- [T155] 정규화/수집 서비스 구현: `MarketDataNormalizationService`, `MarketDataCollectionService` 추가(quote/bar/health 수집, fallback, `market_provider_job`/`api_response_audit` 기록, 민감정보 마스킹/해시/trace_id 유지).
+- [T156] 도메인/리포지토리 보강: `MarketProviderJobEntity` 필드 확장(`job_name`, `triggered_by`, 건수/지연/empty/trace/detail`), `MarketProviderJobType.HEALTH_CHECK` 추가, quote/bar/provider-job 리포지토리 카운트/조회 메서드 확장.
+- [T157] 배치 스케줄러 확장: `MarketQuoteCollectionJob`, `MarketPriceBarCollectionJob`, `MarketProviderHealthCheckJob` 및 `BatchQuartzConfig` trigger 등록(`app.batch.market-quote/bar/provider-health-interval-minutes`).
+- [T158] 진단 API 요약 보강: `AdminDiagnosticsService.getMarketCollectionSummary()`에 `provider_job_count`, 성공/실패/빈응답 건수, `quote_snapshot_count`, `price_bar_count`, provider health fallback 집계 추가.
+- [T159] DB 마이그레이션 추가: `V8__market_provider_collection_foundation.sql` 생성(`market_provider_job` 감사 컬럼 확장, quote/bar/provider_job COMMENT 보강, 진단 인덱스 추가).
+- [T160] 테스트 보강: `MarketCollectionDiagnosticsIntegrationTest` 추가(Mock end-to-end + toss 실패 fallback + kiwoom 빈응답 fallback 시나리오), `DataQualityAuditServiceTest` 생성자 변경 반영.
+- [T161] 로컬 검증 제약 확인: `./gradlew :core:compileJava :batch:compileJava :api:compileJava -x test` 실행 시 로컬 JDK21 toolchain 부재로 컴파일 미실행(현재 JDK25만 설치됨) 상태 기록.

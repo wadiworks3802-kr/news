@@ -15,6 +15,7 @@ import com.wangbyul.gnd.core.repository.MarketDataGapEventRepository;
 import com.wangbyul.gnd.core.repository.MarketDataQualitySnapshotRepository;
 import com.wangbyul.gnd.core.repository.MarketPriceBarRepository;
 import com.wangbyul.gnd.core.repository.MarketQuoteSnapshotRepository;
+import com.wangbyul.gnd.core.util.SensitiveDataMaskingUtil;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
@@ -22,7 +23,6 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.regex.Pattern;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,10 +43,6 @@ public class DataQualityAuditService {
 
     private static final String DEFAULT_PROVIDER = "MOCK";
 
-    private static final Pattern JSON_SECRET_PATTERN = Pattern.compile(
-            "(?i)(\"(?:token|access_token|refresh_token|password|secret|api[_-]?key|authorization)\"\\s*:\\s*\")([^\"]+)(\")");
-    private static final Pattern BEARER_PATTERN = Pattern.compile("(?i)bearer\\s+[a-z0-9\\-._~+/=]+");
-
     private final AssetUniverseRepository assetUniverseRepository;
     private final MarketQuoteSnapshotRepository marketQuoteSnapshotRepository;
     private final MarketPriceBarRepository marketPriceBarRepository;
@@ -54,6 +50,7 @@ public class DataQualityAuditService {
     private final MarketDataGapEventRepository marketDataGapEventRepository;
     private final ApiResponseAuditRepository apiResponseAuditRepository;
     private final ObjectMapper objectMapper;
+    private final SensitiveDataMaskingUtil sensitiveDataMaskingUtil;
 
     @Value("${app.market.quality.max-quote-delay-seconds:120}")
     private long maxQuoteDelaySeconds;
@@ -80,7 +77,8 @@ public class DataQualityAuditService {
             MarketDataQualitySnapshotRepository marketDataQualitySnapshotRepository,
             MarketDataGapEventRepository marketDataGapEventRepository,
             ApiResponseAuditRepository apiResponseAuditRepository,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            SensitiveDataMaskingUtil sensitiveDataMaskingUtil) {
         this.assetUniverseRepository = assetUniverseRepository;
         this.marketQuoteSnapshotRepository = marketQuoteSnapshotRepository;
         this.marketPriceBarRepository = marketPriceBarRepository;
@@ -88,6 +86,7 @@ public class DataQualityAuditService {
         this.marketDataGapEventRepository = marketDataGapEventRepository;
         this.apiResponseAuditRepository = apiResponseAuditRepository;
         this.objectMapper = objectMapper;
+        this.sensitiveDataMaskingUtil = sensitiveDataMaskingUtil;
     }
 
     /**
@@ -328,9 +327,9 @@ public class DataQualityAuditService {
         }
         entity.setHttpStatus(httpStatus);
         entity.setRecordCount(recordCount);
-        entity.setSamplePayloadJson(maskSensitivePayload(samplePayloadJson));
+        entity.setSamplePayloadJson(sensitiveDataMaskingUtil.maskPayload(samplePayloadJson));
         entity.setSuccess(success);
-        entity.setErrorCode(sanitizeErrorCode(errorCode));
+        entity.setErrorCode(sensitiveDataMaskingUtil.sanitizeErrorCode(errorCode));
         entity.setTraceId(traceId());
         apiResponseAuditRepository.save(entity);
     }
@@ -461,25 +460,8 @@ public class DataQualityAuditService {
         }
     }
 
-    private String maskSensitivePayload(String payload) {
-        if (payload == null || payload.isBlank()) {
-            return payload;
-        }
-        String masked = JSON_SECRET_PATTERN.matcher(payload).replaceAll("$1***$3");
-        masked = BEARER_PATTERN.matcher(masked).replaceAll("Bearer ***");
-        return masked;
-    }
-
     private BigDecimal safeDecimal(BigDecimal value) {
         return value == null ? BigDecimal.ZERO : value;
-    }
-
-    private String sanitizeErrorCode(String errorCode) {
-        if (errorCode == null || errorCode.isBlank()) {
-            return null;
-        }
-        String normalized = errorCode.replaceAll("[^A-Za-z0-9_\\-.:]", "");
-        return normalized.length() > 80 ? normalized.substring(0, 80) : normalized;
     }
 
     private String groupKey(String country, String theme) {

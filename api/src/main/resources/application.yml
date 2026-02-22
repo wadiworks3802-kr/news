@@ -35,6 +35,17 @@ management:
 app:
   cache:
     news-list-ttl-seconds: 30
+  market:
+    provider:
+      active: mock
+      fallback-to-mock-on-failure: true
+      mock-bars-per-asset: 3
+      mock-latency-ms: 25
+    collection:
+      quote-asset-limit: 60
+      bar-asset-limit: 30
+      bar-timeframe: 1m
+      bar-points-per-asset: 3
   signal:
     news-windows-minutes: [10, 30, 60, 1440, 10080]
     ma-periods: [5, 20, 60, 120]

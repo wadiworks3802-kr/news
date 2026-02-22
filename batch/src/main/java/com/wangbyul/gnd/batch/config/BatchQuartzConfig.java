@@ -6,6 +6,9 @@ import com.wangbyul.gnd.batch.job.DataQualitySummaryJob;
 import com.wangbyul.gnd.batch.job.FetchJob;
 import com.wangbyul.gnd.batch.job.MarketDataGapDetectionJob;
 import com.wangbyul.gnd.batch.job.MarketDataQualityAuditJob;
+import com.wangbyul.gnd.batch.job.MarketPriceBarCollectionJob;
+import com.wangbyul.gnd.batch.job.MarketProviderHealthCheckJob;
+import com.wangbyul.gnd.batch.job.MarketQuoteCollectionJob;
 import com.wangbyul.gnd.batch.job.NlpJob;
 import com.wangbyul.gnd.batch.job.TickerAliasVerificationJob;
 import com.wangbyul.gnd.batch.job.UniverseRebuildJob;
@@ -43,6 +46,15 @@ public class BatchQuartzConfig {
     @Value("${app.batch.market-gap-detection-interval-minutes:5}")
     private int marketGapDetectionIntervalMinutes;
 
+    @Value("${app.batch.market-quote-interval-minutes:1}")
+    private int marketQuoteIntervalMinutes;
+
+    @Value("${app.batch.market-bar-interval-minutes:1}")
+    private int marketBarIntervalMinutes;
+
+    @Value("${app.batch.market-provider-health-interval-minutes:5}")
+    private int marketProviderHealthIntervalMinutes;
+
     @Value("${app.batch.universe-rebuild-cron:0 10 0 * * ?}")
     private String universeRebuildCron;
 
@@ -59,6 +71,18 @@ public class BatchQuartzConfig {
 
     private int safeMarketGapDetectionIntervalMinutes() {
         return Math.max(1, marketGapDetectionIntervalMinutes);
+    }
+
+    private int safeMarketQuoteIntervalMinutes() {
+        return Math.max(1, marketQuoteIntervalMinutes);
+    }
+
+    private int safeMarketBarIntervalMinutes() {
+        return Math.max(1, marketBarIntervalMinutes);
+    }
+
+    private int safeMarketProviderHealthIntervalMinutes() {
+        return Math.max(1, marketProviderHealthIntervalMinutes);
     }
 
     @Bean
@@ -189,6 +213,63 @@ public class BatchQuartzConfig {
                 .withIdentity("marketDataGapDetectionTrigger")
                 .withSchedule(SimpleScheduleBuilder.simpleSchedule()
                         .withIntervalInMinutes(safeMarketGapDetectionIntervalMinutes())
+                        .repeatForever())
+                .build();
+    }
+
+    @Bean
+    public JobDetail marketQuoteCollectionJobDetail() {
+        return JobBuilder.newJob(MarketQuoteCollectionJob.class)
+                .withIdentity("marketQuoteCollectionJob")
+                .storeDurably()
+                .build();
+    }
+
+    @Bean
+    public Trigger marketQuoteCollectionTrigger(JobDetail marketQuoteCollectionJobDetail) {
+        return TriggerBuilder.newTrigger()
+                .forJob(marketQuoteCollectionJobDetail)
+                .withIdentity("marketQuoteCollectionTrigger")
+                .withSchedule(SimpleScheduleBuilder.simpleSchedule()
+                        .withIntervalInMinutes(safeMarketQuoteIntervalMinutes())
+                        .repeatForever())
+                .build();
+    }
+
+    @Bean
+    public JobDetail marketPriceBarCollectionJobDetail() {
+        return JobBuilder.newJob(MarketPriceBarCollectionJob.class)
+                .withIdentity("marketPriceBarCollectionJob")
+                .storeDurably()
+                .build();
+    }
+
+    @Bean
+    public Trigger marketPriceBarCollectionTrigger(JobDetail marketPriceBarCollectionJobDetail) {
+        return TriggerBuilder.newTrigger()
+                .forJob(marketPriceBarCollectionJobDetail)
+                .withIdentity("marketPriceBarCollectionTrigger")
+                .withSchedule(SimpleScheduleBuilder.simpleSchedule()
+                        .withIntervalInMinutes(safeMarketBarIntervalMinutes())
+                        .repeatForever())
+                .build();
+    }
+
+    @Bean
+    public JobDetail marketProviderHealthCheckJobDetail() {
+        return JobBuilder.newJob(MarketProviderHealthCheckJob.class)
+                .withIdentity("marketProviderHealthCheckJob")
+                .storeDurably()
+                .build();
+    }
+
+    @Bean
+    public Trigger marketProviderHealthCheckTrigger(JobDetail marketProviderHealthCheckJobDetail) {
+        return TriggerBuilder.newTrigger()
+                .forJob(marketProviderHealthCheckJobDetail)
+                .withIdentity("marketProviderHealthCheckTrigger")
+                .withSchedule(SimpleScheduleBuilder.simpleSchedule()
+                        .withIntervalInMinutes(safeMarketProviderHealthIntervalMinutes())
                         .repeatForever())
                 .build();
     }

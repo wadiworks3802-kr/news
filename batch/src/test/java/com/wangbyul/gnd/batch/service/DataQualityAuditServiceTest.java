@@ -12,6 +12,7 @@ import com.wangbyul.gnd.core.repository.MarketDataGapEventRepository;
 import com.wangbyul.gnd.core.repository.MarketDataQualitySnapshotRepository;
 import com.wangbyul.gnd.core.repository.MarketPriceBarRepository;
 import com.wangbyul.gnd.core.repository.MarketQuoteSnapshotRepository;
+import com.wangbyul.gnd.core.util.SensitiveDataMaskingUtil;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import org.junit.jupiter.api.Test;
@@ -52,7 +53,8 @@ class DataQualityAuditServiceTest {
                 marketDataQualitySnapshotRepository,
                 marketDataGapEventRepository,
                 apiResponseAuditRepository,
-                new ObjectMapper());
+                new ObjectMapper(),
+                new SensitiveDataMaskingUtil());
 
         DataQualityAuditService.QualityMetrics metrics = service.calculateQualityMetrics(
                 10,
@@ -76,7 +78,8 @@ class DataQualityAuditServiceTest {
                 marketDataQualitySnapshotRepository,
                 marketDataGapEventRepository,
                 apiResponseAuditRepository,
-                new ObjectMapper());
+                new ObjectMapper(),
+                new SensitiveDataMaskingUtil());
         ReflectionTestUtils.setField(service, "apiResponseAuditRetentionDays", 7);
 
         String payload = "{\"api_key\":\"ABC-123\",\"token\":\"very-secret\",\"value\":10}";

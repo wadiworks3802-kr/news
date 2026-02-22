@@ -24,12 +24,25 @@ app:
     admin-api-key: change-me
   batch:
     fetch-interval-minutes: 1
+    market-quote-interval-minutes: 1
+    market-bar-interval-minutes: 1
+    market-provider-health-interval-minutes: 5
     market-quality-audit-interval-minutes: 10
     market-gap-detection-interval-minutes: 5
     api-response-audit-retention-days: 14
     universe-rebuild-cron: "0 10 0 * * ?"
     ticker-alias-verification-cron: "0 25 0 * * ?"
   market:
+    provider:
+      active: mock
+      fallback-to-mock-on-failure: true
+      mock-bars-per-asset: 3
+      mock-latency-ms: 25
+    collection:
+      quote-asset-limit: 60
+      bar-asset-limit: 30
+      bar-timeframe: 1m
+      bar-points-per-asset: 3
     quality:
       max-quote-delay-seconds: 120
       max-bar-delay-seconds: 300
