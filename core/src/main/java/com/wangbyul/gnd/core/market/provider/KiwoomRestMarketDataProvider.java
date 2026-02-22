@@ -89,6 +89,7 @@ public class KiwoomRestMarketDataProvider implements MarketDataProvider {
                 now,
                 "{\"provider\":\"kiwoom\",\"error\":\"not_implemented\"}",
                 "PROVIDER_STUB_NOT_IMPLEMENTED",
-                Map.of("provider_stub", true));
+                "kiwoom provider stub is not implemented yet",
+                Map.of("provider_stub", true, "degraded", true));
     }
 }

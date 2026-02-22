@@ -55,6 +55,7 @@ public class TossMcpMarketDataProvider implements MarketDataProvider {
                 now,
                 "{\"provider\":\"toss\",\"error\":\"not_implemented\"}",
                 "PROVIDER_STUB_NOT_IMPLEMENTED",
-                Map.of("provider_stub", true));
+                "toss provider stub is not implemented yet",
+                Map.of("provider_stub", true, "degraded", true));
     }
 }

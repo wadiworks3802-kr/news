@@ -21,6 +21,7 @@ public record MarketProviderFetchResult<T>(
         OffsetDateTime responseTimeUtc,
         String samplePayloadJson,
         String errorCode,
+        String errorMessage,
         Map<String, Object> meta) {
 
     public MarketProviderFetchResult {
@@ -62,6 +63,7 @@ public record MarketProviderFetchResult<T>(
                 responseTimeUtc,
                 samplePayloadJson,
                 null,
+                null,
                 meta);
     }
 
@@ -74,6 +76,28 @@ public record MarketProviderFetchResult<T>(
             String samplePayloadJson,
             String errorCode,
             Map<String, Object> meta) {
+        return failure(
+                providerName,
+                apiName,
+                httpStatus,
+                requestTimeUtc,
+                responseTimeUtc,
+                samplePayloadJson,
+                errorCode,
+                null,
+                meta);
+    }
+
+    public static <T> MarketProviderFetchResult<T> failure(
+            String providerName,
+            String apiName,
+            Integer httpStatus,
+            OffsetDateTime requestTimeUtc,
+            OffsetDateTime responseTimeUtc,
+            String samplePayloadJson,
+            String errorCode,
+            String errorMessage,
+            Map<String, Object> meta) {
         return new MarketProviderFetchResult<>(
                 providerName,
                 apiName,
@@ -84,6 +108,7 @@ public record MarketProviderFetchResult<T>(
                 responseTimeUtc,
                 samplePayloadJson,
                 errorCode,
+                errorMessage,
                 meta);
     }
 }

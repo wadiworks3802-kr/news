@@ -45,11 +45,24 @@ public class MarketDataProviderRouter {
     }
 
     public MarketDataProvider resolveActiveProvider() {
-        return resolveOrMock(activeProviderId());
+        return resolveRequired(activeProviderId());
     }
 
     public MarketDataProvider resolveMockProvider() {
-        return resolveOrMock("mock");
+        return resolveRequired("mock");
+    }
+
+    public MarketDataProvider resolveRequired(String providerId) {
+        String normalized = normalize(providerId);
+        MarketDataProvider provider = providers.get(normalized);
+        if (provider != null) {
+            return provider;
+        }
+        throw new IllegalStateException("MarketDataProvider not registered: " + normalized);
+    }
+
+    public boolean isMockProviderId(String providerId) {
+        return "mock".equals(normalize(providerId));
     }
 
     public MarketDataProvider resolveOrMock(String providerId) {

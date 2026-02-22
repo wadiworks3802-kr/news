@@ -67,7 +67,12 @@ public class MarketPriceBarEntity {
     private BigDecimal volume = BigDecimal.ZERO;
 
     @Column(name = "provider_name", length = 64)
+    @Comment("수집 Provider 코드")
     private String providerName;
+
+    @Column(name = "trace_id", length = 64)
+    @Comment("수집 실행 trace_id (시장데이터 수집/진단 추적용)")
+    private String traceId;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     @Comment("레코드 생성 시각")

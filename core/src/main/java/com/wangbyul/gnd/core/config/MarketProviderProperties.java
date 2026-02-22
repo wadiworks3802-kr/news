@@ -26,7 +26,7 @@ public class MarketProviderProperties {
     /**
      * 운영 환경에서 mock provider 사용 허용 여부.
      *
-     * false 인 경우에도 현재 차수에서는 "강제 차단"보다는 진단/경고 목적으로 우선 사용한다.
+     * false 인 경우 mock 활성화/자동 fallback 모두 차단한다.
      */
     private boolean allowMock = false;
 

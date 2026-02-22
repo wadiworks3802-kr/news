@@ -91,6 +91,14 @@ public class MarketProviderJobEntity {
     @Comment("마지막 실패 사유(민감정보 마스킹 후 저장)")
     private String lastError;
 
+    @Column(name = "provider_error_code", length = 128)
+    @Comment("Provider 원천 오류 코드(표준화 전/후 식별용)")
+    private String providerErrorCode;
+
+    @Column(name = "provider_error_message", columnDefinition = "text")
+    @Comment("Provider 원천 오류 메시지(민감정보 마스킹 후 저장)")
+    private String providerErrorMessage;
+
     @Column(name = "detail_json", columnDefinition = "text")
     @Comment("실행 세부 메타데이터(JSON 문자열)")
     private String detailJson;

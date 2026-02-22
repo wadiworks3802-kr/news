@@ -227,3 +227,10 @@
 - [T220] 운영/로컬 설정 초안 추가: `api/batch application*.yml`에 `app.market.provider.allow-mock`(운영 `false`, 로컬 `true`) 및 `app.trade.live-enabled=false` 기본값을 명시해 운영 기준 설정 초안을 문서화.
 - [T221] 배포 검증 재현 문서 추가: `docs/DeploymentVerificationChecklist.md` 신규 작성(헬스체크/진단 API/Mock 경고/trace_id/감사테이블/토글 검증 절차 및 후속 TODO 명시).
 - [T222] 정적 검증 완료(1차): `MarketProviderJobRepository` 누락 조회 메서드 추가 후 `./gradlew.bat :core:compileJava :api:compileJava :batch:compileJava -x test` 빌드 성공으로 이번 차수 변경분 컴파일 정합성 확인.
+- [T223] 시장데이터 Provider 추상화/선택 전략 강화(2차): `MarketDataProviderRouter`, `MarketDataCollectionService`를 확장해 요청 provider 지정 수집, `allowMock=false` 시 mock 직접호출/실패 fallback 차단, provider 미등록/실패/빈응답 구조화 결과(`error_code`, `error_message`, `trace_id`) 반환 경로를 정비.
+- [T224] 시장데이터 적재/감사 엔티티 확장(2차): `MarketQuoteSnapshotEntity`, `MarketPriceBarEntity`에 `trace_id` 저장 필드를 추가하고 `MarketProviderJobEntity`에 `provider_error_code`, `provider_error_message` 필드를 추가(한글 `@Comment` 반영)하여 수집 재현성/오류 감사 골격을 강화.
+- [T225] 시장데이터 감사/응답 DTO 확장(2차): `MarketProviderFetchResult`에 `errorMessage`를 추가하고 Toss/키움 provider stub 응답에 `PROVIDER_STUB_NOT_IMPLEMENTED` + 메시지 및 degraded 메타를 포함하도록 보강.
+- [T226] DB 마이그레이션 추가(2차): `V13__market_provider_runtime_visibility.sql` 생성으로 `market_quote_snapshot.trace_id`, `market_price_bar.trace_id`, `market_provider_job.provider_error_code/provider_error_message` 컬럼 및 `COMMENT ON COLUMN`을 적용.
+- [T227] 수동 수집 테스트 엔드포인트 추가(2차): `AdminMarketDataController`에 `POST /api/admin/market-data/collect`를 추가해 `QUOTE/BAR/HEALTH_CHECK` 수동 실행, provider override, `meta(provider_name/is_delayed/degraded/warnings/mock_provider_warning/trace_id)` 반환이 가능하도록 연결.
+- [T228] 운영 Mock 금지 모드 검증(2차): 로컬 API를 `app.market.provider.active=toss`, `app.market.provider.allow-mock=false`로 기동해 실 provider 실패 시 mock 혼합 없이 `FAILED`/`fallback_blocked=true`/`provider_error_code=PROVIDER_STUB_NOT_IMPLEMENTED` 응답을 확인.
+- [T229] DB 적재 증거 확인(2차): H2 Shell로 `market_quote_snapshot` provider 분포 및 최신 행 `provider_name`, `quote_time_utc`, `ingested_at`, `trace_id` 저장 여부와 `market_provider_job`의 `provider_error_code/provider_error_message/trace_id` 감사 행을 조회해 증거를 수집.
