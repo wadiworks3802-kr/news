@@ -1,0 +1,3 @@
+rootProject.name = "gnd"
+
+include("core", "collector", "nlp", "api", "web", "batch")

@@ -1,0 +1,81 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gnd
+      POSTGRES_USER: gnd
+      POSTGRES_PASSWORD: gnd
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/gnd
+      SPRING_DATASOURCE_USERNAME: gnd
+      SPRING_DATASOURCE_PASSWORD: gnd
+      SPRING_DATA_REDIS_HOST: redis
+      APP_SECURITY_ADMIN_API_KEY: change-me
+      APP_NEWS_MAX_RETENTION_DAYS: 7
+      APP_TRANSLATION_KO_ENABLED: "true"
+      APP_TRANSLATION_KO_TIMEOUT_SECONDS: 4
+      APP_TRANSLATION_KO_MAX_CHARS: 500
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8080:8080"
+
+  batch:
+    build:
+      context: ./batch
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/gnd
+      SPRING_DATASOURCE_USERNAME: gnd
+      SPRING_DATASOURCE_PASSWORD: gnd
+      SPRING_DATA_REDIS_HOST: redis
+      APP_BATCH_FETCH_INTERVAL_MINUTES: 1
+      APP_NEWS_MAX_RETENTION_DAYS: 7
+    depends_on:
+      - postgres
+      - redis
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "8081:8081"
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - web
+    ports:
+      - "80:80"
+
+volumes:
+  pg_data:

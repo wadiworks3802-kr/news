@@ -1,0 +1,109 @@
+spring:
+  datasource:
+    url: jdbc:h2:file:./.data/gnd;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;AUTO_SERVER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+  flyway:
+    enabled: false
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+app:
+  cache:
+    news-list-ttl-seconds: 30
+  signal:
+    news-windows-minutes: [10, 30, 60, 1440, 10080]
+    ma-periods: [5, 20, 60, 120]
+    volume-same-tolerance-pct: 5.0
+    pressure-window-bars: 20
+    volume-window-bars: 20
+    pressure-detection-threshold: 0.70
+    good-news-threshold: 0.6
+    bad-news-threshold: 0.6
+    signal-cooldown-minutes: 15
+    min-news-count-for-probability: 8
+    news-trust-score-min: 0.40
+    positive-sentiment-threshold: 0.55
+    negative-sentiment-threshold: 0.55
+    news-decay-half-life-minutes: 240
+    probability-calculation-mode: RULE_V1
+    insufficient-sample-confidence-floor: 0.20
+    news-price-alignment-window-minutes: 60
+    translation-delay-penalty-threshold-seconds: 900
+    block-future-data: true
+    chart-atr-period: 14
+    chart-volume-average-bars: 20
+    chart-high-low-lookback-bars: 20
+    chart-trend-slope-lookback-bars: 20
+    chart-trend-slope-min-pct: 0.15
+    chart-volume-ratio-min: 1.05
+    chart-long-bias-min-rule-hits: 4
+    chart-short-bias-min-rule-hits: 4
+    chart-trend-breakdown-pct: 8.0
+    chart-trend-breakdown-atr-multiplier: 1.20
+    chart-avg-down-min-confidence: 0.45
+    fusion-chart-good-threshold: 0.55
+    fusion-chart-weak-threshold: 0.45
+    fusion-high-confidence-threshold: 0.62
+    auto-generate-enabled: true
+    auto-generate-interval-ms: 60000
+  risk:
+    capital-total: 1000000
+    max-position-ratio-per-asset: 0.30
+    max-theme-exposure-ratio: 0.45
+    max-country-exposure-ratio: 0.60
+    max-open-positions: 8
+    buy-split-rules: [30, 30, 40]
+    sell-split-rules: [30, 30, 40]
+    take-profit-pct: 8.0
+    stop-loss-pct: 5.0
+    reanalysis-lock-after-tp-sl: true
+    reanalysis-lock-minutes: 120
+  security:
+    admin-api-key: change-me
+    cors-allowlist: http://localhost:8080,http://localhost:8081
+  news:
+    max-retention-days: 7
+  universe:
+    min-assets-per-country: 5
+    min-assets-per-theme: 3
+    core-assets-per-country: 8
+    max-same-family-exposure: 2
+    repeat-penalty-lookback-days: 7
+    repeat-penalty-per-exposure: 1.5
+    min-quality-score-for-core: 70
+    mapping-window-days: 7
+    mapping-max-links-per-news: 6
+  translation:
+    ko:
+      enabled: true
+      timeout-seconds: 4
+      max-chars: 500
+      prefetch-enabled: true
+      prefetch-interval-ms: 45000
+      prefetch-window-hours: 24
+      prefetch-limit: 120
+  seed:
+    enabled: true
+    sample-news-enabled: false
+    items-per-category: 5
+    reset-on-start: false
+  backtest:
+    validation-mode: TRAIN_TEST_SPLIT
+    out-of-sample-required: true
+    minimum-trade-count-threshold: 20
+    overfit-warning-enabled: true
+    train-split-ratio: 0.70
+    walk-forward-train-size: 120
+    walk-forward-test-size: 30
+    walk-forward-step-size: 30
+    max-rows: 1000

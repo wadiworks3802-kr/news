@@ -1,0 +1,391 @@
+openapi: 3.0.3
+info:
+  title: Global News Dashboard API
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/news:
+    get:
+      summary: List normalized news
+      parameters:
+        - in: query
+          name: country
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z]{2,5}$'
+        - in: query
+          name: category
+          required: true
+          schema:
+            type: string
+            enum: [BRK, POL, ECO, MKT, DEV, IND]
+        - in: query
+          name: sort
+          schema:
+            type: string
+            default: latest
+        - in: query
+          name: period
+          schema:
+            type: string
+            default: 24h
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: size
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+        - in: query
+          name: view_lang
+          schema:
+            type: string
+            enum: [ko, raw]
+            default: ko
+        - in: query
+          name: q
+          schema:
+            type: string
+      responses:
+        '200':
+          description: success
+        '400':
+          description: validation error
+  /api/news/{id}:
+    get:
+      summary: Get news detail
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: view_lang
+          schema:
+            type: string
+            enum: [ko, raw]
+            default: ko
+      responses:
+        '200':
+          description: success
+        '404':
+          description: not found
+  /api/insight:
+    get:
+      summary: Get insight cards
+      parameters:
+        - in: query
+          name: category
+          required: true
+          schema:
+            type: string
+            enum: [BRK, POL, ECO, MKT, DEV, IND]
+        - in: query
+          name: period
+          schema:
+            type: string
+            default: 24h
+        - in: query
+          name: country
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z]{2,5}$'
+      responses:
+        '200':
+          description: success
+  /api/insight/stocks:
+    get:
+      summary: Get stock signal cards (personal helper)
+      parameters:
+        - in: query
+          name: country
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z]{2,5}$'
+        - in: query
+          name: period
+          schema:
+            type: string
+            default: 24h
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 5
+      responses:
+        '200':
+          description: success
+  /api/insight/signals/scalp:
+    get:
+      summary: Get scalp signal cards
+      parameters:
+        - in: query
+          name: country
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z]{2,5}$'
+        - in: query
+          name: theme
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: success
+  /api/insight/signals/swing:
+    get:
+      summary: Get swing signal cards
+      parameters:
+        - in: query
+          name: country
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z]{2,5}$'
+        - in: query
+          name: theme
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: success
+  /api/insight/signals/position:
+    get:
+      summary: Get position strategy signal by asset
+      parameters:
+        - in: query
+          name: assetCode
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: success
+  /api/insight/discovery:
+    get:
+      summary: Get 6-month discovery signals
+      parameters:
+        - in: query
+          name: country
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z]{2,5}$'
+        - in: query
+          name: theme
+          schema:
+            type: string
+        - in: query
+          name: period
+          schema:
+            type: string
+            default: 6m
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: success
+  /api/insight/assets/{assetCode}/weekly-context:
+    get:
+      summary: Get weekly context analysis by asset
+      parameters:
+        - in: path
+          name: assetCode
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: success
+  /api/insight/assets/{assetCode}/pressure-analysis:
+    get:
+      summary: Get pressure analysis by asset
+      parameters:
+        - in: path
+          name: assetCode
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: success
+  /api/insight/signals/{signalId}:
+    get:
+      summary: Get signal detail for drill-down popup
+      parameters:
+        - in: path
+          name: signalId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: success
+  /api/insight/backtest/compare:
+    get:
+      summary: Get backtest comparison report
+      parameters:
+        - in: query
+          name: country
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z]{2,5}$'
+        - in: query
+          name: theme
+          schema:
+            type: string
+        - in: query
+          name: period
+          schema:
+            type: string
+            default: 30d
+        - in: query
+          name: validation_mode
+          schema:
+            type: string
+            enum: [TRAIN_TEST_SPLIT, WALK_FORWARD, NONE]
+      responses:
+        '200':
+          description: success
+  /api/insight/backtest/reports:
+    get:
+      summary: Get stored backtest comparison reports
+      parameters:
+        - in: query
+          name: country
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z]{2,5}$'
+        - in: query
+          name: theme
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: success
+  /api/paper-trade/risk/portfolio:
+    get:
+      summary: Get paper-trade portfolio risk dashboard
+      responses:
+        '200':
+          description: success
+  /api/paper-trade/locks:
+    get:
+      summary: Get active BUY_LOCK assets
+      responses:
+        '200':
+          description: success
+  /api/admin/sources:
+    get:
+      summary: List sources (ADMIN)
+      security:
+        - ApiKeyAuth: []
+    post:
+      summary: Create source (ADMIN)
+      security:
+        - ApiKeyAuth: []
+  /api/admin/sources/{sid}:
+    get:
+      summary: Get source (ADMIN)
+      security:
+        - ApiKeyAuth: []
+    put:
+      summary: Update source (ADMIN)
+      security:
+        - ApiKeyAuth: []
+    delete:
+      summary: Delete source (ADMIN)
+      security:
+        - ApiKeyAuth: []
+  /api/admin/ingest/run:
+    post:
+      summary: Trigger manual ingest run (ADMIN)
+      security:
+        - ApiKeyAuth: []
+  /api/admin/paper-trade/risk-policy:
+    post:
+      summary: Update paper-trade risk policy (ADMIN)
+      security:
+        - ApiKeyAuth: []
+  /api/admin/paper-trade/capital-config:
+    post:
+      summary: Update paper-trade capital/split config (ADMIN)
+      security:
+        - ApiKeyAuth: []
+  /api/admin/paper-trade/orders/simulate:
+    post:
+      summary: Execute simulated paper-trade order (ADMIN)
+      security:
+        - ApiKeyAuth: []
+  /api/admin/diagnostics/universe:
+    get:
+      summary: Get universe diagnostics (ADMIN)
+      security:
+        - ApiKeyAuth: []
+  /api/admin/diagnostics/universe/rebuild:
+    post:
+      summary: Trigger universe rebuild now (ADMIN)
+      security:
+        - ApiKeyAuth: []
+  /api/admin/diagnostics/ticker-alias:
+    get:
+      summary: Get ticker alias diagnostics (ADMIN)
+      security:
+        - ApiKeyAuth: []
+  /api/admin/diagnostics/ticker-alias/verify:
+    post:
+      summary: Trigger ticker alias verification now (ADMIN)
+      security:
+        - ApiKeyAuth: []
+  /api/admin/diagnostics/news-asset-mapping:
+    get:
+      summary: Get news-asset mapping diagnostics (ADMIN)
+      security:
+        - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-KEY

@@ -1,0 +1,158 @@
+# Work Timeline
+
+## 2026-02-20
+- [T1] `prompt.md` 요구사항 분석 완료 (PROMPT-0~3).
+- [T2] 멀티모듈 프로젝트 디렉터리/기본 Gradle 파일 생성 (`core/collector/nlp/api/web/batch`).
+- [T3] `core` 모듈 구현 완료: Entity(News/Source/FetchJob/InsightLog), Repository 4종, Service 인터페이스 4종, PolicyEngine 골격.
+- [T4] DB 마이그레이션 `V1__init_schema.sql` 작성: 테이블 4종, 필수 인덱스/ER 관계 반영.
+- [T5] `collector` 구현: condGET WebClient, 429 전용 retry(1/4/16m), Normalize/Dedup/FetchService 파이프라인, In-memory DLQ.
+- [T6] `nlp` 구현: TR(MQM/COMET)·SUM(SummaC/evidence_spans) 게이트 기반 NlpPipelineService 골격.
+- [T7] `batch` 구현: Quartz Job/Trigger(Fetch/NLP/Cleanup), 소스등급별 주기(P0=5m,P1=15m,P2/3=60m), 배치 trace span 골격 추가.
+- [T8] `api` 구현: News/Insight/Admin Controller, 입력 검증(정규식/RFC3339), ErrorDto 통일, OpenAPI 문서.
+- [T9] `web` 구현: jQuery4 모바일 우선 SPA, 필터/스켈레톤/재시도/카드/근거스팬 UI.
+- [T10] 배포 골격 추가: `docker-compose.yml`, `infra/nginx/nginx.conf`, 모듈별 Dockerfile.
+- [T11] 최종 문서 생성: `docs/final-deliverables.md` (요구 산출물 패키지), `README.md` 작성.
+- [T12] 실행 검증 시도: 로컬 환경에 `gradle` 미설치로 빌드/테스트 실행 불가 확인.
+- [T13] 빌드 보정: 공통 Lombok 의존성 전역화, `core` jackson-annotations 추가, `api` flyway-core 추가.
+- [T14] 최소 단위테스트 추가: UrlNormalizer, PolicyEngine, NewsCacheKeyFactory.
+- [T15] UI 보강: 카드 메타에 출처(source) 배지 추가, DTO/매핑 연동.
+- [T16] 로컬 실행환경 부트스트랩: `.tools/gradle-8.14`, `.tools/jdk-21` 설치 및 Gradle wrapper 생성.
+- [T17] 인코딩 복구: BOM 제거(UTF-8 no BOM)로 Gradle 파싱 오류 해결.
+- [T18] 로컬 기동 보정: `application-local.yml`(H2/Flyway off), `NewsController` Redis 장애 내성 추가.
+- [T19] 스캔/자동설정 보정: `GndApiApplication` JPA 스캔 명시, `WebApplication` DB/Redis 자동설정 제외.
+- [T20] 실제 기동 검증: API(8080) + WEB(8081) 실행, `/api/news` 및 웹 루트(200) 응답 확인.
+- [T21] local DB를 `H2 file(./.data/gnd)`로 전환하고 API/BATCH 공통 로컬 프로필 구성.
+- [T22] 시드 체계 추가: `LocalSeedService` + `LocalSeedRunner`, 카테고리별 30건(6x5) 자동 생성.
+- [T23] 관리자 수동수집 API 추가: `POST /api/admin/ingest/run` + `AdminIngestService` 구현.
+- [T24] 배치 엔트리포인트 보강: `@EnableJpaRepositories/@EntityScan` 명시.
+- [T25] 웹 UI 포털형 개편: 상단 고정 필터 + 섹션형(BRK/POL/ECO/MKT/DEV/IND) 카드 레이아웃.
+- [T26] IDE Gradle 정합 설정: `.vscode/settings.json`에 JDK21/wrapper 기반 설정 반영.
+- [T27] 검증 완료: `gradlew help` 성공, API/Web 기동, 카테고리별 데이터 조회/수동수집/검증 오류응답 확인.
+- [T28] 실시간 수집 가시화 보강: `collector`에서 RSS/Atom 기사 단위 파싱(제목/링크/발행시각/요약) 저장 로직 반영.
+- [T29] 로컬 샘플 의존 축소: `AdminIngestService`의 로컬 fallback 기사 자동생성 제거.
+- [T30] 시드 정책 분리: 소스 부트스트랩 유지 + `app.seed.sample-news-enabled=false` 기본값 적용, 기존 `local.seed/local.ingest` 샘플 URL 데이터 자동 정리.
+- [T31] 문서 계획 병합: `prompt.md`에 PROMPT-4(실시간 피드 홈/요약-핫픽스 분리) 추가.
+- [T32] 실시간 수집 검증: `POST /api/admin/ingest/run`(sid=`rss-bbc-world-p0`) 호출로 `news_created=20` 확인, BRK 목록에 실기사 제목/요약 노출 확인.
+- [T33] 다국가 기본 소스 확장: 로컬 부트스트랩 소스를 대상국 10개 무료 RSS(google locale feed 포함)로 확대, legacy `seed-src-*` 자동 비활성 처리.
+- [T34] 수집 안정화 보강: 긴 URL 허용(`news.url/url_norm` 확장), 수동수집 트랜잭션 분리로 부분 실패 시 전체 500 방지.
+- [T35] 카테고리 분산 보강: 수집 시 키워드+해시 fallback 분류 및 중복 기사의 BRK -> 도메인 카테고리 승격 로직 추가.
+- [T36] API 응답 확장: 뉴스 목록 DTO에 `url`, `thumbnail_url` 추가(본문 이미지 우선 + favicon fallback).
+- [T37] UI 가독성 개편: 국가/카테고리 한글(영문) 표기, 카드 썸네일 영역/원문 링크/메타 배치 개선.
+- [T38] 통합 검증: `POST /api/admin/ingest/run` 재검증(`requested=12, succeeded=12, news_created=1`) 및 KR/US 포함 다국가 카테고리 조회 확인.
+- [T39] 코드 주석/설명 보강: 최근 변경 Java/API/Batch/Web 파일에 한글 주석 추가(작성자: 안태욱, 날짜: 2026-02-20).
+- [T40] 전역 주석 확장: 미주석 Java/JS 파일 59개에 한글 헤더 주석 일괄 추가(작성자: 안태욱, 날짜: 2026-02-20), 로직 변경 없이 컴파일 통과 확인.
+- [T41] 홈 피드 최적화: 카테고리 섹션당 노출 개수를 최대 3건으로 제한하고 초과 건수는 `+N 더보기` 액션으로 분리.
+- [T42] 상세 라우팅 추가: `view/detailCategory` 해시 라우트와 `이전 화면` 버튼을 연동해 카테고리 상세 화면 진입/복귀 동선 구현.
+- [T43] 썸네일 가독성 개선: 실이미지 우선 + 실패 시 텍스트 기반 SVG 썸네일 fallback, 출처 아이콘 오버레이/카테고리 칩 추가.
+- [T44] 배치 수집 주기 조정: `BatchQuartzConfig`를 설정형 1분 주기로 변경(`app.batch.fetch-interval-minutes`), 로컬 기본값 1분 적용.
+- [T45] 빌드 검증: `.tools/jdk-21` 지정 후 `gradlew :api:compileJava :batch:compileJava` 성공 확인.
+- [T46] 기본 조회 크기 재정의: 홈(미리보기)과 상세 조회 크기를 분리하도록 `size` 기반 조회 정책 설계(홈 fetch=4, 홈 표시=3, 상세 fetch=20).
+- [T47] API 확장: `GET /api/news`에 `size(1~50)` 파라미터 추가, 캐시 키에 `size` 차원 포함 및 캐시 payload에 `total` 저장으로 더보기 카운트 정확도 보장.
+- [T48] 프론트 연동: 카테고리별 `meta.total`을 `sectionTotals`로 관리하고 `+N 더보기`를 `total - preview` 기준으로 계산하도록 변경.
+- [T49] 홈 카드 밀도 조정: 카드 패딩/요약 줄수/메타 배지 크기/썸네일 높이를 축소해 한 화면 정보량을 높임.
+- [T50] 레이아웃 재조정: 데스크톱 `portal-grid`의 BRK 고정 확장 영역을 제거하고 3열 균등 배치로 변경해 빈 공간 과다 점유 해소.
+- [T51] 속보 노출 강화: 홈에서 BRK 미리보기 개수를 5건으로 상향(`brkHomePreview`), 일반 카테고리는 3건 유지.
+- [T52] 배열 안정화: 홈 섹션 레이아웃을 masonry(컬럼 기반)로 전환해 섹션 높이 차이에 의한 대형 공백 구간 제거.
+- [T53] 카드 가독성 개선: 썸네일 오버레이 텍스트 중복 제거, 상단 카테고리 배지/출처 아이콘 분리, 요약/메타 밀도 재정렬.
+- [T54] 속보 균형 재조정: BRK 홈 미리보기를 4건으로 조정하고 홈 조회 크기를 4건으로 맞춰 섹션 간 높이 편차 완화.
+- [T55] 보관 정책 강화: 뉴스 저장 TTL을 최대 7일로 clamp하고(`FetchServiceImpl`), `CleanupJob`에 7일 하드 삭제(`created_at` 기준) 로직 반영.
+- [T56] 다국가 한국어 보기 지원: `view_lang=ko|raw` 파라미터를 `GET /api/news`, `GET /api/news/{id}`에 추가하고 자동 번역(`KoreanTranslationService`) 연동.
+- [T57] 캐시 정합성 보강: 뉴스 목록 Redis 캐시 키에 `size`, `view_lang` 차원을 포함하고 캐시 payload에 `total` 저장.
+- [T58] 상시 운영 스크립트 보강: 로컬/서버 백그라운드 실행 스크립트(`scripts/start-local-background.ps1`, `scripts/server-up.ps1`)와 README 운영 절차 반영.
+- [T59] 배치 기동 충돌 수정: `BatchApplication`을 non-web 모드로 강제하고(`WebApplicationType.NONE` + `batch/application.yml`), batch가 8080 포트를 점유하던 문제 해결.
+- [T60] 실기동 검증 완료: API(8080)/WEB(8081)/BATCH(non-web) 동시 백그라운드 실행 확인, 관리 소스/다국가 카테고리 조회 응답 확인.
+- [T61] Rocky Linux 서버(`192.168.30.39`) 원격 배포 수행: `/home/was/gnd-news` 경로에 소스 업로드/압축 해제 및 권한 보정.
+- [T62] 서버 런타임 준비: `java-21-openjdk`/`java-21-openjdk-devel` 설치 후 시스템 기본 Java를 21로 전환.
+- [T63] 서버 빌드/기동 구성: `:api/:web/:batch bootJar` 생성 후 `gnd-api/gnd-web/gnd-batch` systemd 서비스 등록(`enable --now`)으로 상시 백그라운드 실행.
+- [T64] 외부 접속 보강: `firewalld`에 `8080/tcp`, `8081/tcp` 개방하고 원격 HTTP 응답(웹/뉴스 API) 확인.
+- [T65] 원격 웹 API 경로 보정: `web/index.html`의 API 베이스를 고정 `localhost`에서 `window.location.hostname` 기반 동적 주소로 변경.
+- [T66] 운영 자동화 스크립트 추가: `scripts/linux/server-install-systemd.sh`, `scripts/linux/server-build-restart.sh`, `scripts/linux/server-unpack-and-deploy.sh` 작성.
+- [T67] 운영 문서화 갱신: `README.md`에 Rocky Linux 배포 절차/패치 절차 및 스크립트 기반 업데이트 방법 반영.
+- [T68] 서버 CORS 운영 보정: API 서비스의 allowlist에 `http://192.168.30.39:8081` 반영 후 preflight(OPTIONS) 200 응답 확인.
+- [T69] 번역 지연/경합 개선: `NewsLocalizationService` 비동기 번역 큐 + `TranslationPrefetchScheduler` 사전 적재로 요청 경로 동기 번역 제거.
+- [T70] 조회 속도/정합 보강: 뉴스 목록 캐시 TTL 설정(`app.cache.news-list-ttl-seconds`)과 `view_lang=ko` 번역 pending 메타(`translation_pending`) 응답 추가.
+- [T71] 최신순 정렬 고정: 뉴스 목록 정렬을 `pubUtc DESC -> fetchUtc DESC -> createdAt DESC` 우선순위로 통일.
+- [T72] UI 경합 제어/실시간 갱신: `AbortController` + 요청 시퀀스 가드로 stale 응답 차단, 30초 주기 비동기 자동 갱신 추가.
+- [T73] 썸네일 가독성 개선: 정적 LIVE NEWS fallback 제거, 제목 기반 SVG 썸네일(다중 라인) + 출처 아이콘 오버레이 적용.
+- [T74] 개인용 주식 시그널 추가: `GET /api/insight/stocks`(rule-heuristic-v1) 및 홈 `개인용 주식 시그널` 패널 구현.
+- [T75] 심화 기능 빌드 검증: `.tools/jdk-21` 지정 후 `:core/:collector/:nlp/:api/:batch compile` 및 `:api:test` 통과 확인.
+
+## 2026-02-21
+- [T76] `PROMPT-6-ADV` 착수: 요구사항(전략 1~10, A~H) 원문 분석 및 기존 구조 갭 분석 완료.
+- [T77] 1차(DB/도메인) 반영: 신규 도메인/리포지토리 추가(`asset_universe`, `market_price_bar`, `market_quote_snapshot`, `news_asset_link`, `trading_signal`, `strategy_run`, `paper_trade_order`, `paper_trade_position`, `market_provider_job`, `strategy_config`).
+- [T78] 마이그레이션 추가: `V2__trading_signal_adv.sql` 작성(필수 테이블/인덱스/`trading_signal` 확장 필드 반영).
+- [T79] 설정 외부화 기초 반영: `SignalPolicyProperties`, `RiskPolicyProperties`, `app.signal.*`, `app.risk.*` 기본값 추가.
+- [T80] 시그널 엔진 분리 구현 시작: `ScalpNewsSignalService`, `MarketTrendSignalService`, `PressureDetectionService`, `WeeklyContextAnalysisService`, `ChartPositionStrategyService`, `LongTermDiscoveryService`, `SignalFusionService`, `ReanalysisLockService`, `RiskPolicyService`, `SignalReasonBuilder` 신규 추가.
+- [T81] 시그널 오케스트레이터 구현: `TradingSignalEngineService`에서 엔진 결합/리스크판정/`trading_signal` 저장/상세조회 로직 연결.
+- [T82] 백테스트 비교 리포트 구현: `BacktestComparisonService` 추가(`뉴스전용/차트전용/퓨전`, MDD/과매매 비교).
+- [T83] 모의매매 구현: `PaperTradeSimulationService` 추가(분할매수·매도, 주문 차단 사유, TP/SL 기반 `BUY_LOCK` 전환).
+- [T84] 설정 동적 저장소 구현: `StrategyConfigService`, `PaperTradeConfigService` 추가 및 ADMIN 리스크/자본 설정 API 반영.
+- [T85] API 계약 확장: `InsightController`에 scalp/swing/position/discovery/weekly-context/pressure-analysis/signal-detail/backtest 경로 추가, `PaperTradeController`/`AdminPaperTradeController` 신규 추가.
+- [T86] 로컬 전략 검증 데이터 보강: `LocalSeedService`에 `asset_universe`/`market_price_bar`/`market_quote_snapshot` 자동 부트스트랩 추가.
+- [T87] UI 확장: 분석 목적별 패널(단타/중기/차트대응/발굴), 리스크 패널, BUY_LOCK 목록, 시그널 상세 팝업 추가.
+- [T88] OpenAPI/설정 갱신: `openapi.yaml` 확장, `application*.yml`에 `app.signal` 자동생성 설정 추가.
+- [T89] 테스트 확장(40+): API 모듈 단위 테스트 43건 통과(`SignalFusion`, `PressureDetection`, `RiskPolicy`, `StrategyConfig`, `PaperTradeConfig`, `BacktestComparison`).
+- [T90] 최신 코드 재빌드 검증: 로컬에서 `:api/:web/:batch bootJar -x test` 재실행 및 성공 확인.
+- [T91] 원격 배포 수행: `gnd-news-src.zip`를 `192.168.30.39:/home/was` 업로드 후 `/home/was/gnd-news`에 반영.
+- [T92] 서버 빌드/서비스 재기동 완료: 원격 `:api/:web/:batch bootJar` 성공 및 `gnd-api/gnd-web/gnd-batch` 모두 `active` 확인, `8081`/`/api/news` HTTP 응답 검증 완료.
+- [T93] PROMPT-7 1차 착수: 범위 A/C/G 기준으로 DB 품질진단·시간정렬·감사로그 뼈대 설계 확정.
+- [T94] 마이그레이션 추가: `V3__quality_alignment_audit.sql` 생성(`market_data_quality_snapshot`, `market_data_gap_event`, `api_response_audit`, `signal_audit_log`, 시간정렬 컬럼 확장, COMMENT ON TABLE/COLUMN/INDEX 반영).
+- [T95] 코어 도메인/리포지토리 확장: 품질/감사 엔티티 4종 + enum 4종 + repository 4종 추가, 기존 `news/market_price_bar/market_quote_snapshot` 시간정렬 필드 확장.
+- [T96] 배치 골격 추가: `DataQualityAuditService` 구현 및 `MarketDataQualityAuditJob`, `MarketDataGapDetectionJob`, `ApiResponseAuditCleanupJob`, `DataQualitySummaryJob` + Quartz trigger 등록.
+- [T97] API 골격 추가: `TimeAlignmentValidationService`, `SignalAuditLogService` 추가 및 `TradingSignalEngineService`에 시간정렬 감점/미래데이터 차단/감사로그 저장 연결.
+- [T98] 설정 외부화 반영: `app.market.quality.*`, `app.batch.market-*-interval-*`, `app.batch.api-response-audit-retention-days`, `app.signal.news-price-alignment-window-minutes`, `app.signal.translation-delay-penalty-threshold-seconds`, `app.signal.block-future-data` 추가.
+- [T99] 테스트 초안/검증: `DataQualityAuditServiceTest`, `TimeAlignmentValidationServiceTest`, `SignalAuditLogServiceTest` 추가 후 `:core:compileJava :collector:compileJava :api:test :batch:test` 성공.
+- [T100] PROMPT-7 2차 착수: 범위 B(유니버스/티커/매핑 고도화) 요구사항 분석 및 기존 도메인/배치/API 영향도 점검.
+- [T101] 스키마 확장: `V4__universe_ticker_mapping_upgrade.sql` 추가(`asset_universe` 확장 필드, `ticker_alias_dictionary`, `ticker_alias_audit`, `mapping_quality_report` + COMMENT ON TABLE/COLUMN 반영).
+- [T102] 도메인/리포지토리 확장: `AssetUniverseEntity` 선정/검증 필드 확장, 티커/매핑 엔티티·enum·repository 추가.
+- [T103] 유니버스 재구성 로직 구현: `UniverseRebuildService` 추가(국가/테마 최소 종목 수 보장, 동일 패밀리 반복 제한, 최근 노출 패널티, 품질 하한 기반 핵심자산 선별).
+- [T104] 배치 구현: `UniverseRebuildJob`, `TickerAliasVerificationJob` 추가 및 Quartz cron 스케줄 연결(일 1회).
+- [T105] 티커 별칭 검증 구현: `TickerAliasVerificationService` 추가(형식/거래소/매핑/중복/로케일 충돌 점검, `verification_status` 갱신).
+- [T106] 매핑 품질 리포트 구현: `MappingQualityReportService` 추가(직접매칭 정밀도, 테마 오탐률, 과확장률, link_score 분포 저장).
+- [T107] 관리자 진단 API 추가: `/api/admin/diagnostics/universe`, `/api/admin/diagnostics/ticker-alias`, `/api/admin/diagnostics/news-asset-mapping` 및 수동 실행 엔드포인트(`/universe/rebuild`, `/ticker-alias/verify`) 반영.
+- [T108] 설정/호환성 보강: `app.universe.*`, 배치 cron 설정 추가, 시그널 자산 조회 우선순위를 `display_weight/selection_score` 기반으로 보강(기존 응답 포맷 유지).
+- [T109] 통합 빌드 검증: `:core:compileJava :api:compileJava :batch:compileJava :api:test :batch:test` 성공.
+- [T110] PROMPT-7 3차 착수: D/C 범위(확률 RULE_V1, 차트 룰셋 V1, 압력탐지 수치화, 감사로그 상세화) 요구사항 정합 분석 완료.
+- [T111] 설정 외부화 확장: `SignalPolicyProperties`에 RULE_V1/ChartRuleSetV1/Pressure/Fusion 임계값 추가 및 `application.yml`, `application-local.yml` 동기화.
+- [T112] 확률 엔진 고도화: `ScalpNewsSignalService`를 RULE_V1로 재구성(신뢰도 하한 필터, 미래시각 차단, 시간감쇠, 표본 부족 처리)하고 `probability_reason_breakdown_json` 생성.
+- [T113] 차트/압력 룰셋 구현: `ChartPositionStrategyService`에 MA/ATR/거래량/고저점/추세 기울기 기반 `CHART_RULESET_V1` 반영, `PressureDetectionService`에 비율형 임계/거래량 동일 판정 및 `pressure_reason_json` 생성 반영.
+- [T114] 저장/감사 확장: `V5__signal_rule_v1_detail_fields.sql` 추가, `TradingSignalEntity`에 `probability_reason_breakdown_json`, `pressure_reason_json` 필드 확장, `TradingSignalEngineService`와 `SignalAuditLogService`의 `rule_hits_json`/`risk_checks_json` 기록 구조 강화.
+- [T115] 문서화 완료: `docs/SignalRules.md`, `docs/ChartRuleSetV1.md` 신규 작성(규칙/임계치/저장필드/감사로그 기준 명시).
+- [T116] 테스트 보강: `ScalpNewsSignalServiceTest` 신규 추가 및 기존 `SignalFusionServiceTest`, `PressureDetectionServiceTest`, `SignalAuditLogServiceTest`를 변경 모델에 맞게 갱신.
+- [T117] PROMPT-7 4차 착수: E 범위(백테스트 검증 구조/비교 리포트) 요구사항 분석 및 기존 `BacktestComparisonService` 한계점 점검.
+- [T118] 백테스트 정책 외부화: `BacktestPolicyProperties`, `BacktestValidationMode`, `app.backtest.*`(validation_mode, out_of_sample_required, minimum_trade_count_threshold, walk-forward 파라미터) 추가.
+- [T119] 전략 실행 요약 확장: `V6__strategy_run_result_summary.sql` 추가 및 `strategy_run.result_summary_json` 컬럼/엔티티 필드 확장.
+- [T120] 백테스트 서비스 개편: `BacktestComparisonService`를 TRAIN_TEST_SPLIT/WALK_FORWARD 검증 구조로 재구성, OOS 강제/최소거래 경고/look-ahead 위반 탐지/정책 전후+뉴스/차트/결합 비교 JSON 리포트 자동 생성 및 `strategy_run` 저장 연동.
+- [T121] API 조회 확장: `InsightController`의 `/api/insight/backtest/compare`에 `validation_mode` 옵션 추가, 저장 리포트 조회용 `/api/insight/backtest/reports` 신규 추가.
+- [T122] DTO 확장: `BacktestComparisonDto`에 검증/경고/정책전후/리포트JSON 필드 추가, `BacktestReportDto` 신규 추가.
+- [T123] 테스트 보강: `BacktestComparisonServiceTest`를 재작성하여 검증모드 분기, OOS/최소거래 경고, look-ahead 검증, 자동 리포트 저장, 저장 리포트 조회 시나리오 반영.
+- [T124] PROMPT-7 5차(F) 착수: 운영 킬스위치/진단 API/UI 범위 요구사항 정합 분석 및 기존 보안/홈 동작 영향도 점검.
+- [T125] 킬스위치 DB/도메인 추가: `V7__system_feature_toggle.sql`, `SystemFeatureToggleEntity`, `SystemFeatureToggleRepository` 및 `FeatureScopeType` 반영.
+- [T126] 킬스위치 API 추가: `AdminFeatureToggleController` + `SystemFeatureToggleService` 구현(`GET/POST/PATCH /api/admin/feature-toggles`).
+- [T127] 시그널 엔진 연동: `TradingSignalEngineService`에 feature toggle 사전 차단(`SIGNAL_GENERATION`, 엔진별 토글) 반영.
+- [T128] 진단 API 전체 확장: `AdminDiagnosticsController`/`AdminDiagnosticsService`에 수집품질/유니버스/신호감사/trace 상세 엔드포인트 추가.
+- [T129] 리포지토리 보강: trace/엔진/최근 조회를 위한 `MarketDataQualitySnapshotRepository`, `ApiResponseAuditRepository`, `SignalAuditLogRepository`, `TradingSignalRepository`, `StrategyRunRepository` 메서드 확장.
+- [T130] 관리자 UI 탭 분리: `index.html`, `app.js`, `ui.js`, `api.js`, `style.css`에 관리자 진단 패널/킬스위치 패널 추가(홈 자동갱신/기존 뉴스 렌더 동작 유지).
+- [T131] trace_id 상세 조회 기능 추가: 관리자 패널에서 `trace_id` 입력 후 수집/신호/토글 상세 조회 연동.
+- [T132] 회귀 테스트 추가: `AdminSecurityRegressionTest`, `NewsControllerRegressionTest` 작성(ROLE_ADMIN 보호/기존 뉴스 홈 응답 구조 확인).
+- [T133] 로컬 빌드 검증 시도: `:core/:api/:web compile` 실행, JDK21 toolchain 미설치로 컴파일 미실행 상태 확인(환경 보강 필요).
+- [T134] 원격 재배포 수행(`192.168.30.39`): 최신 소스 업로드 후 `:api/:web/:batch bootJar` 재빌드 시도, API 컴파일 오류 원인 추적.
+- [T135] 배포 차단 이슈 수정 #1: `BacktestComparisonService`, `ChartPositionStrategyService`, `PressureDetectionService`, `SignalReasonBuilder` UTF-8 BOM 제거로 JDK21 컴파일 오류 해소.
+- [T136] 배포 차단 이슈 수정 #2: `SignalReasonBuilder`의 `Map.of`(10쌍 제한) 구문을 `Map.ofEntries`로 변경해 컴파일 실패 해소.
+- [T137] 서버 DB 정합성 긴급 보정: H2 스키마에서 누락된 `asset_universe` 컬럼(`is_core_asset`, `is_watchlist_asset`, `display_weight`) 및 `trading_signal` JSON 컬럼(`probability_reason_breakdown_json`, `pressure_reason_json`) 추가/기본값 반영.
+- [T138] WEB 기동 실패 수정: `web/WebApplication`의 컴포넌트 스캔 범위를 `com.wangbyul.gnd.web`로 축소해 JPA 비활성 모듈에서 코어 서비스 빈 충돌 제거.
+- [T139] 관리자 토글 API 500 수정: `SystemFeatureToggleService.list()`에서 `Page.getContent()` 불변 리스트 정렬 문제를 `new ArrayList<>(...)`로 수정.
+- [T140] 서버 재기동/통합 점검 완료: `gnd-api/gnd-web/gnd-batch` 모두 `active(running)` 확인, `:8080` 뉴스/관리자 API 및 `:8081` 웹 응답 200, 수동 수집 API `news_created` 증가 검증.
+- [T141] 운영 API 안정화: `GlobalExceptionHandler`에 `MissingServletRequestParameterException`, `MethodArgumentTypeMismatchException`를 BAD_REQUEST(400)로 매핑해 누락 파라미터 500 오류 제거.
+- [T142] 운영 재배포/재검증: API 재빌드 후 `GET /api/news`(필수 파라미터 누락 시 400), `GET /api/admin/feature-toggles`(200), 웹 루트(200) 응답 확인.
+
+## 2026-02-22
+- [T143] 운영 DB 원격조회 개선 착수: H2 file lock 충돌 원인을 정리하고 "앱+클라이언트가 단일 H2 TCP 서버를 공유"하는 상시 접속 구조로 전환 결정.
+- [T144] 서버 운영 스크립트 개선: `scripts/linux/run-h2-tcp-server.sh` 신규 추가(H2 jar 자동 탐색, `org.h2.tools.Server` foreground 실행).
+- [T145] systemd 설치 스크립트 개편: `scripts/linux/server-install-systemd.sh`에 `gnd-h2.service` 추가 및 `gnd-api/gnd-batch`의 `SPRING_DATASOURCE_URL`을 `jdbc:h2:tcp://127.0.0.1:9092//...`로 강제.
+- [T146] 재기동 스크립트 보강: `scripts/linux/server-build-restart.sh`가 `gnd-h2` 존재 시 함께 재기동/상태점검하도록 확장.
+- [T147] 운영 문서 보강: `README.md`에 H2 TCP 포트(9092) 방화벽, DBeaver JDBC URL, H2 드라이버 사용 및 file lock 방지 구조 설명 추가.
+- [T148] 원격 전환 배포 수행(`192.168.30.39`): 수정된 Linux 스크립트 업로드 후 `server-install-systemd.sh` 재실행으로 `gnd-h2/gnd-api/gnd-web/gnd-batch` 서비스 구조 적용.
+- [T149] 운영 이슈 수정: Rocky Linux `systemd`에서 홈 경로 스크립트 직접 실행 시 `gnd-h2.service` `203/EXEC` 오류를 `ExecStart=/usr/bin/bash .../run-h2-tcp-server.sh`로 보정.
+- [T150] 운영 이슈 수정: 과거 수동 H2 TCP 프로세스(`org.h2.tools.Server`, PID 659071)가 9092를 점유해 `gnd-h2` 재기동 실패한 문제를 종료 후 `gnd-h2` systemd 서비스로 대체.
+- [T151] 전환 검증 완료: API/BATCH가 `jdbc:h2:tcp://127.0.0.1:9092///home/was/gnd-news/.data/gnd`로 연결되는 것(Hikari 로그) 확인, `GET /api/news` 200 및 H2 Shell TCP 쿼리(`select count(*) from news`) 성공.

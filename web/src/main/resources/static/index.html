@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Global News Dashboard</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <script src="https://code.jquery.com/jquery-4.0.0.min.js"></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <h1>Global News Dashboard</h1>
+      <p>공식 소스 기반 번역/요약/검증 뉴스 포털</p>
+      <section class="filters" aria-label="뉴스 필터">
+        <select id="country" aria-label="국가">
+          <option value="KR">대한민국 (KR)</option>
+          <option value="US">미국 (US)</option>
+          <option value="UK">영국 (UK)</option>
+          <option value="DE">독일 (DE)</option>
+          <option value="FR">프랑스 (FR)</option>
+          <option value="JP">일본 (JP)</option>
+          <option value="CN">중국 (CN)</option>
+          <option value="IN">인도 (IN)</option>
+          <option value="RU">러시아 (RU)</option>
+          <option value="BR">브라질 (BR)</option>
+        </select>
+        <select id="category" aria-label="카테고리">
+          <option value="ALL">전체 (ALL)</option>
+          <option value="BRK">속보 (BRK)</option>
+          <option value="POL">정치 (POL)</option>
+          <option value="ECO">경제 (ECO)</option>
+          <option value="MKT">시장 (MKT)</option>
+          <option value="DEV">기술 (DEV)</option>
+          <option value="IND">산업 (IND)</option>
+        </select>
+        <select id="sort" aria-label="정렬">
+          <option value="latest">최신순</option>
+        </select>
+        <select id="period" aria-label="기간">
+          <option value="24h">24h</option>
+          <option value="7d">7d</option>
+          <option value="30d">30d</option>
+        </select>
+        <select id="viewLang" aria-label="표시 언어">
+          <option value="ko">한국어 보기</option>
+          <option value="raw">원문 보기</option>
+        </select>
+        <input id="q" type="search" placeholder="검색어" aria-label="검색어" />
+        <button id="refresh" type="button">갱신</button>
+      </section>
+      <nav class="view-tabs" aria-label="화면 탭">
+        <button id="tab-home" class="view-tab active" type="button">뉴스 홈</button>
+        <button id="tab-admin" class="view-tab" type="button">관리자 진단</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="portal-wrap">
+    <section id="home-view">
+      <section class="status-row">
+        <span id="status">준비 중...</span>
+        <span id="live-state" class="live-state">실시간 자동갱신 ON</span>
+        <button id="retry" class="hide" type="button">재시도</button>
+      </section>
+
+      <section class="stock-panel" id="stock-panel">
+        <header class="stock-head">
+          <h2>개인용 주식 시그널</h2>
+          <span id="stock-meta">생성 대기</span>
+        </header>
+        <div id="stock-list" class="stock-list"></div>
+      </section>
+
+      <section class="analysis-panel" id="analysis-panel">
+        <header class="analysis-head">
+          <h2>전략 분석 패널 (참고용 시그널)</h2>
+          <span id="analysis-meta">분석 대기</span>
+        </header>
+        <div class="analysis-grid">
+          <article class="analysis-card">
+            <h3>최근 뉴스 검색 (단타)</h3>
+            <div id="panel-scalp" class="signal-list"></div>
+          </article>
+          <article class="analysis-card">
+            <h3>시장 동향 (중기/일매매)</h3>
+            <div id="panel-swing" class="signal-list"></div>
+          </article>
+          <article class="analysis-card">
+            <h3>차트 대응 전략</h3>
+            <div id="panel-position" class="signal-list"></div>
+          </article>
+          <article class="analysis-card">
+            <h3>6개월 발굴 후보</h3>
+            <div id="panel-discovery" class="signal-list"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="risk-panel" id="risk-panel">
+        <header class="stock-head">
+          <h2>리스크/자금관리 패널</h2>
+          <span id="risk-meta">조회 대기</span>
+        </header>
+        <div id="risk-summary" class="risk-summary"></div>
+        <div class="risk-lock-head">현재 BUY_LOCK 종목</div>
+        <div id="lock-list" class="lock-list"></div>
+      </section>
+
+      <section class="portal-grid" id="portal-grid"></section>
+    </section>
+
+    <section id="admin-view" class="hide">
+      <section class="admin-panel">
+        <header class="stock-head">
+          <h2>관리자 진단 패널</h2>
+          <span id="admin-meta">ADMIN API KEY 입력 필요</span>
+        </header>
+        <div class="admin-controls">
+          <input id="admin-api-key" type="password" placeholder="X-API-KEY 입력" aria-label="관리자 API 키" />
+          <button id="admin-refresh" type="button">진단 새로고침</button>
+          <input id="admin-trace-id" type="text" placeholder="trace_id 상세 조회" aria-label="trace_id" />
+          <button id="admin-trace-load" type="button">trace 조회</button>
+        </div>
+      </section>
+
+      <section class="admin-grid">
+        <article class="admin-card">
+          <h3>수집 품질 요약</h3>
+          <div id="admin-market-summary"></div>
+        </article>
+        <article class="admin-card">
+          <h3>품질 점수 추이</h3>
+          <div id="admin-quality-score"></div>
+        </article>
+        <article class="admin-card">
+          <h3>갭 이벤트</h3>
+          <div id="admin-market-gaps"></div>
+        </article>
+        <article class="admin-card">
+          <h3>Provider 감사</h3>
+          <div id="admin-provider-audit"></div>
+        </article>
+        <article class="admin-card">
+          <h3>유니버스/다양성</h3>
+          <div id="admin-universe"></div>
+        </article>
+        <article class="admin-card">
+          <h3>매핑/티커 진단</h3>
+          <div id="admin-mapping"></div>
+        </article>
+        <article class="admin-card">
+          <h3>시그널 감사/정렬</h3>
+          <div id="admin-signals"></div>
+        </article>
+        <article class="admin-card">
+          <h3>킬스위치(Feature Toggle)</h3>
+          <div class="toggle-form">
+            <input id="toggle-feature-key" type="text" placeholder="feature_key" aria-label="feature_key" />
+            <select id="toggle-scope-type" aria-label="scope_type">
+              <option value="GLOBAL">GLOBAL</option>
+              <option value="COUNTRY">COUNTRY</option>
+              <option value="THEME">THEME</option>
+              <option value="ASSET">ASSET</option>
+            </select>
+            <input id="toggle-scope-value" type="text" placeholder="scope_value(optional)" aria-label="scope_value" />
+            <select id="toggle-enabled" aria-label="enabled">
+              <option value="true">ON</option>
+              <option value="false">OFF</option>
+            </select>
+            <input id="toggle-reason" type="text" placeholder="사유" aria-label="사유" />
+            <button id="toggle-upsert" type="button">토글 적용</button>
+          </div>
+          <div id="admin-toggles"></div>
+        </article>
+        <article class="admin-card">
+          <h3>trace_id 상세</h3>
+          <div id="admin-trace-detail"></div>
+        </article>
+      </section>
+    </section>
+  </main>
+
+  <div id="signal-modal" class="signal-modal hide" role="dialog" aria-modal="true" aria-label="시그널 상세">
+    <div class="signal-modal-inner">
+      <button id="signal-modal-close" type="button">닫기</button>
+      <div id="signal-modal-body"></div>
+    </div>
+  </div>
+
+  <script>
+    const apiProtocol = window.location.protocol || "http:";
+    const apiHost = window.location.hostname || "localhost";
+    window.API_BASE = `${apiProtocol}//${apiHost}:8080`;
+  </script>
+  <script src="/js/store.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/ui.js"></script>
+  <script src="/js/router.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

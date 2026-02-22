@@ -1,0 +1,7 @@
+{
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "java.compile.nullAnalysis.mode": "automatic",
+  "java.import.gradle.wrapper.enabled": true,
+  "java.import.gradle.java.home": "${workspaceFolder}\\.tools\\jdk-21",
+  "java.jdt.ls.java.home": "${workspaceFolder}\\.tools\\jdk-21"
+}

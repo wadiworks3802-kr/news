@@ -1,0 +1,9 @@
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    implementation project(':core')
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}

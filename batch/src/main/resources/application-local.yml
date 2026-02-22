@@ -1,0 +1,50 @@
+spring:
+  datasource:
+    url: jdbc:h2:file:./.data/gnd;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;AUTO_SERVER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+  flyway:
+    enabled: false
+  data:
+    redis:
+      host: localhost
+      port: 6379
+  quartz:
+    job-store-type: memory
+
+app:
+  security:
+    admin-api-key: change-me
+  batch:
+    fetch-interval-minutes: 1
+    market-quality-audit-interval-minutes: 10
+    market-gap-detection-interval-minutes: 5
+    api-response-audit-retention-days: 14
+    universe-rebuild-cron: "0 10 0 * * ?"
+    ticker-alias-verification-cron: "0 25 0 * * ?"
+  market:
+    quality:
+      max-quote-delay-seconds: 120
+      max-bar-delay-seconds: 300
+      outlier-threshold-pct: 20
+      audit-sample-rate: 0.1
+      minimum-quality-score: 70
+  universe:
+    min-assets-per-country: 5
+    min-assets-per-theme: 3
+    core-assets-per-country: 8
+    max-same-family-exposure: 2
+    repeat-penalty-lookback-days: 7
+    repeat-penalty-per-exposure: 1.5
+    min-quality-score-for-core: 70
+    mapping-window-days: 7
+    mapping-max-links-per-news: 6
+  news:
+    max-retention-days: 7

@@ -1,0 +1,32 @@
+package com.wangbyul.gnd.batch.job;
+
+import com.wangbyul.gnd.batch.otel.OtelBatchTracer;
+import com.wangbyul.gnd.batch.service.DataQualityAuditService;
+import org.quartz.DisallowConcurrentExecution;
+import org.quartz.JobExecutionContext;
+import org.springframework.scheduling.quartz.QuartzJobBean;
+import org.springframework.stereotype.Component;
+
+/**
+ * 시장데이터 누락/지연/시간역전 탐지 배치 잡.
+ *
+ * 작성자 : 안태욱
+ * 현재날짜 : 2026년 02월 20일
+ */
+@Component
+@DisallowConcurrentExecution
+public class MarketDataGapDetectionJob extends QuartzJobBean {
+
+    private final DataQualityAuditService dataQualityAuditService;
+    private final OtelBatchTracer tracer;
+
+    public MarketDataGapDetectionJob(DataQualityAuditService dataQualityAuditService, OtelBatchTracer tracer) {
+        this.dataQualityAuditService = dataQualityAuditService;
+        this.tracer = tracer;
+    }
+
+    @Override
+    protected void executeInternal(JobExecutionContext context) {
+        tracer.trace("batch.market-gap-detection", dataQualityAuditService::runMarketDataGapDetection);
+    }
+}
