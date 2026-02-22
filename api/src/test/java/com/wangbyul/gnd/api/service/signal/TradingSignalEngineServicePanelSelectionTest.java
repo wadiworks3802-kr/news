@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wangbyul.gnd.api.config.SignalPolicyProperties;
 import com.wangbyul.gnd.api.dto.TradingSignalViewDto;
 import com.wangbyul.gnd.api.service.SystemFeatureToggleService;
+import com.wangbyul.gnd.api.service.assistant.AssistantRagService;
 import com.wangbyul.gnd.api.service.signal.panel.ChartResponseStrategyService;
 import com.wangbyul.gnd.api.service.signal.panel.DiscoveryStrategyService;
 import com.wangbyul.gnd.api.service.signal.panel.ScalpStrategyService;
@@ -72,6 +73,8 @@ class TradingSignalEngineServicePanelSelectionTest {
     private SignalReasonBuilder signalReasonBuilder;
     @Mock
     private SystemFeatureToggleService systemFeatureToggleService;
+    @Mock
+    private AssistantRagService assistantRagService;
 
     @Test
     void scalpPanelShouldReduceRepeatedAssetsAndFamiliesAndExposeSelectionMeta() {
@@ -95,6 +98,7 @@ class TradingSignalEngineServicePanelSelectionTest {
                 objectMapper,
                 new SignalPolicyProperties(),
                 systemFeatureToggleService,
+                assistantRagService,
                 new ScalpStrategyService(objectMapper),
                 new SwingStrategyService(objectMapper),
                 new ChartResponseStrategyService(objectMapper),

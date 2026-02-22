@@ -575,6 +575,11 @@ window.ui = {
       scalpBreakdown = {};
     }
     const dataState = String(scalpBreakdown.data_state || "");
+    const assistant = detail.assistant_rag || {};
+    const assistantEvidence = Array.isArray(assistant.evidence_bullets) ? assistant.evidence_bullets : [];
+    const assistantCautions = Array.isArray(assistant.caution_bullets) ? assistant.caution_bullets : [];
+    const assistantMissing = Array.isArray(assistant.missing_data_bullets) ? assistant.missing_data_bullets : [];
+    const assistantChanges = Array.isArray(assistant.change_triggers) ? assistant.change_triggers : [];
     const probabilitySummary = (dataState === "NO_MATCHED_NEWS" || dataState === "INSUFFICIENT_DATA")
       ? `뉴스기반 확률 보류 (${dataState})`
       : `호재확률 ${Number(detail.good_news_probability ?? 0).toFixed(3)} / 악재확률 ${Number(detail.bad_news_probability ?? 0).toFixed(3)}`;
@@ -589,6 +594,10 @@ window.ui = {
         <section class="signal-detail-card">압력분석: sell_detected=${Boolean(pressure.sell_pressure_detected)} / sell_negative=${Boolean(pressure.sell_pressure_is_negative)} / buy_detected=${Boolean(pressure.buy_pressure_detected)} / buy_positive=${Boolean(pressure.buy_pressure_is_positive)} / volume_same=${Boolean(pressure.volume_regime_same)}</section>
         <section class="signal-detail-card">리스크체크: ${this.escapeHtml(riskChecks.join(", ") || "-")}</section>
         <section class="signal-detail-card">주문 차단사유: ${this.escapeHtml(detail.blocked_reason || "없음")}</section>
+        <section class="signal-detail-card">RAG 보조요약(${this.escapeHtml(assistant.source || "N/A")}): ${this.escapeHtml(assistant.summary || "비활성/없음")}</section>
+        <section class="signal-detail-card">RAG 근거요약: ${this.escapeHtml(assistantEvidence.join(" / ") || "-")}</section>
+        <section class="signal-detail-card">RAG 주의점: ${this.escapeHtml(assistantCautions.join(" / ") || "-")}</section>
+        <section class="signal-detail-card">RAG 추가조건: ${this.escapeHtml([...assistantMissing, ...assistantChanges].join(" / ") || "-")}</section>
       </div>
     `;
     $("#signal-modal-body").html(body);
@@ -734,10 +743,17 @@ window.ui = {
       return;
     }
     const data = traceDetail.data;
+    const assistant = data.assistant_summary || {};
+    const assistantHighlights = Array.isArray(assistant.highlights) ? assistant.highlights : [];
+    const assistantCautions = Array.isArray(assistant.cautions) ? assistant.cautions : [];
     $("#admin-trace-detail").html(`
       <div class="admin-kv">trace_id ${this.escapeHtml(data.trace_id || "")}</div>
       <div class="admin-kv">counts ${this.escapeHtml(JSON.stringify(data.counts || {}))}</div>
       <div class="admin-kv">feature_toggles ${Array.isArray(data.feature_toggles) ? data.feature_toggles.length : 0}건</div>
+      <div class="admin-kv">assistant_summary ${this.escapeHtml(assistant.summary || "없음")}</div>
+      <div class="admin-kv">assistant_source ${this.escapeHtml(assistant.source || "-")} / fallback=${Boolean(assistant.fallback_applied)}</div>
+      <div class="admin-kv">assistant_highlights ${this.escapeHtml(assistantHighlights.join(" | ") || "-")}</div>
+      <div class="admin-kv">assistant_cautions ${this.escapeHtml(assistantCautions.join(" | ") || "-")}</div>
     `);
   },
 

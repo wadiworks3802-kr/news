@@ -3,7 +3,9 @@ package com.wangbyul.gnd.api.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wangbyul.gnd.api.dto.FeatureToggleDto;
+import com.wangbyul.gnd.api.service.assistant.AssistantRagService;
 import com.wangbyul.gnd.core.domain.ApiResponseAuditEntity;
+import com.wangbyul.gnd.core.domain.AssistantRagAuditLogEntity;
 import com.wangbyul.gnd.core.domain.AssetUniverseEntity;
 import com.wangbyul.gnd.core.domain.AuditSeverityType;
 import com.wangbyul.gnd.core.domain.MarketDataGapEventEntity;
@@ -13,6 +15,7 @@ import com.wangbyul.gnd.core.domain.SignalAuditLogEntity;
 import com.wangbyul.gnd.core.domain.StrategyRunEntity;
 import com.wangbyul.gnd.core.domain.TradingSignalEntity;
 import com.wangbyul.gnd.core.repository.ApiResponseAuditRepository;
+import com.wangbyul.gnd.core.repository.AssistantRagAuditLogRepository;
 import com.wangbyul.gnd.core.repository.AssetUniverseRepository;
 import com.wangbyul.gnd.core.repository.MarketDataGapEventRepository;
 import com.wangbyul.gnd.core.repository.MarketDataQualitySnapshotRepository;
@@ -70,6 +73,8 @@ public class AdminDiagnosticsService {
     private final StrategyRunRepository strategyRunRepository;
     private final AssetUniverseRepository assetUniverseRepository;
     private final SystemFeatureToggleService systemFeatureToggleService;
+    private final AssistantRagService assistantRagService;
+    private final AssistantRagAuditLogRepository assistantRagAuditLogRepository;
     private final ObjectMapper objectMapper;
 
     @Value("${app.market.quality.minimum-quality-score:70}")
@@ -520,12 +525,20 @@ public class AdminDiagnosticsService {
     }
 
     public Map<String, Object> getTraceDetail(String traceId, int limit) {
+        return getTraceDetail(traceId, limit, true);
+    }
+
+    public Map<String, Object> getTraceDetail(String traceId, int limit, boolean includeAssistant) {
         if (isBlank(traceId)) {
             throw new IllegalArgumentException("trace_id is required");
         }
         int safeLimit = clampLimit(limit);
         List<FeatureToggleDto> toggles = systemFeatureToggleService.list(null, null, null, traceId, safeLimit);
         List<StrategyRunEntity> strategyRuns = strategyRunRepository.findTop100ByTraceIdOrderByStartedAtDesc(traceId)
+                .stream()
+                .limit(safeLimit)
+                .toList();
+        List<AssistantRagAuditLogEntity> assistantAudits = assistantRagAuditLogRepository.findTop200ByTraceIdOrderByCreatedAtDesc(traceId)
                 .stream()
                 .limit(safeLimit)
                 .toList();
@@ -537,6 +550,7 @@ public class AdminDiagnosticsService {
                 "gap_events", marketDataGapEventRepository.findTop200ByTraceIdOrderByEventTimeUtcDesc(traceId).size(),
                 "provider_audits", apiResponseAuditRepository.findTop300ByTraceIdOrderByRequestTimeUtcDesc(traceId).size(),
                 "signal_audits", signalAuditLogRepository.findTop200ByTraceIdOrderByAuditTimeUtcDesc(traceId).size(),
+                "assistant_rag_audits", assistantAudits.size(),
                 "strategy_runs", strategyRuns.size(),
                 "feature_toggles", toggles.size()));
         data.put("market_collection", Map.of(
@@ -594,8 +608,27 @@ public class AdminDiagnosticsService {
                             item.put("blocked_reason", blankAs(row.getBlockedReason(), ""));
                             item.put("trace_id", blankAs(row.getTraceId(), ""));
                             return item;
-                        }).toList()));
+                        }).toList(),
+                "assistant_rag_audits", assistantAudits.stream().map(row -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("id", row.getId());
+                    item.put("request_scope", blankAs(row.getRequestScope(), ""));
+                    item.put("request_key", blankAs(row.getRequestKey(), ""));
+                    item.put("signal_id", blankAs(row.getSignalId(), ""));
+                    item.put("asset_code", blankAs(row.getAssetCode(), ""));
+                    item.put("fallback_applied", Boolean.TRUE.equals(row.getFallbackApplied()));
+                    item.put("success", Boolean.TRUE.equals(row.getSuccess()));
+                    item.put("error_code", blankAs(row.getErrorCode(), ""));
+                    item.put("latency_ms_total", row.getLatencyMsTotal());
+                    item.put("created_at", row.getCreatedAt());
+                    item.put("trace_id", blankAs(row.getTraceId(), ""));
+                    return item;
+                }).toList()));
         data.put("feature_toggles", toggles);
+        if (includeAssistant) {
+            Map<String, Object> assistantSummary = assistantRagService.assistTraceDetail(traceId, data, includeAssistant);
+            data.put("assistant_summary", assistantSummary);
+        }
         return data;
     }
 

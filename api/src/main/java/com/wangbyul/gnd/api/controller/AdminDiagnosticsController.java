@@ -202,8 +202,9 @@ public class AdminDiagnosticsController {
     @GetMapping("/trace-detail")
     public ApiEnvelope<Map<String, Object>> traceDetail(
             @RequestParam(name = "trace_id") String traceId,
-            @RequestParam(defaultValue = "50") int limit) {
-        Map<String, Object> data = adminDiagnosticsService.getTraceDetail(traceId, limit);
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(name = "assistant", defaultValue = "true") boolean assistant) {
+        Map<String, Object> data = adminDiagnosticsService.getTraceDetail(traceId, limit, assistant);
         int warningCount = estimateTraceWarningCount(data);
         return envelope(data, adminDiagnosticsService.diagnosticMeta("trace-detail", warningCount));
     }

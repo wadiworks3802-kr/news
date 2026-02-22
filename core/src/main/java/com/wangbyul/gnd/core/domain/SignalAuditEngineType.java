@@ -11,5 +11,6 @@ public enum SignalAuditEngineType {
     SWING,
     POSITION,
     DISCOVERY,
-    FUSION
+    FUSION,
+    RAG_ASSISTANT
 }

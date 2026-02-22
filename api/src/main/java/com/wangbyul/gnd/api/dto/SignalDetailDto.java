@@ -68,6 +68,9 @@ public class SignalDetailDto {
     @JsonProperty("rag_context_refs_json")
     private String ragContextRefsJson;
 
+    @JsonProperty("assistant_rag")
+    private AssistantRagInsightDto assistantRag;
+
     @JsonProperty("news_evidence")
     private List<String> newsEvidence;
 

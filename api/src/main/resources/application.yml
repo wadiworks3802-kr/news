@@ -127,6 +127,26 @@ app:
       prefetch-interval-ms: 45000
       prefetch-window-hours: 24
       prefetch-limit: 120
+  assistant-rag:
+    enabled: true
+    signal-detail-enabled: true
+    trace-detail-enabled: true
+    model-mode: template
+    timeout-millis: 450
+    latency-warning-millis: 250
+    circuit-error-rate-threshold: 0.50
+    circuit-latency-rate-threshold: 0.60
+    circuit-window-size: 20
+    circuit-consecutive-failure-threshold: 3
+    circuit-open-seconds: 60
+    max-recent-news: 8
+    news-lookback-hours: 48
+    max-bars: 30
+    bar-timeframe: 1m
+    max-signal-audits: 5
+    data-gap-states: [NO_MATCHED_NEWS, INSUFFICIENT_DATA]
+    prompt-version: RAG_ASSISTANT_PROMPT_V1
+    model-version: rag-lite-template-v1
   backtest:
     validation-mode: TRAIN_TEST_SPLIT
     out-of-sample-required: true

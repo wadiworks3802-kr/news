@@ -255,11 +255,13 @@ public class InsightController {
      * 시그널 상세 팝업 정보.
      */
     @GetMapping("/insight/signals/{signalId}")
-    public ApiEnvelope<SignalDetailDto> getSignalDetail(@PathVariable String signalId) {
-        SignalDetailDto data = tradingSignalEngineService.getSignalDetail(signalId);
+    public ApiEnvelope<SignalDetailDto> getSignalDetail(
+            @PathVariable String signalId,
+            @RequestParam(name = "assistant", defaultValue = "true") boolean assistant) {
+        SignalDetailDto data = tradingSignalEngineService.getSignalDetail(signalId, assistant);
         return ApiEnvelope.<SignalDetailDto>builder()
                 .data(data)
-                .meta(Map.of("signal_id", signalId))
+                .meta(Map.of("signal_id", signalId, "assistant", assistant))
                 .traceId(traceId())
                 .build();
     }

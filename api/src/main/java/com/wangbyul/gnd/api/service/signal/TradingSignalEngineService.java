@@ -8,6 +8,7 @@ import com.wangbyul.gnd.api.dto.SignalDetailDto;
 import com.wangbyul.gnd.api.dto.TradingSignalViewDto;
 import com.wangbyul.gnd.api.dto.WeeklyContextDto;
 import com.wangbyul.gnd.api.service.SystemFeatureToggleService;
+import com.wangbyul.gnd.api.service.assistant.AssistantRagService;
 import com.wangbyul.gnd.api.service.signal.panel.ChartResponseStrategyService;
 import com.wangbyul.gnd.api.service.signal.panel.DiscoveryStrategyService;
 import com.wangbyul.gnd.api.service.signal.panel.PanelStrategyEvaluation;
@@ -78,6 +79,7 @@ public class TradingSignalEngineService {
     private final ObjectMapper objectMapper;
     private final SignalPolicyProperties signalPolicyProperties;
     private final SystemFeatureToggleService systemFeatureToggleService;
+    private final AssistantRagService assistantRagService;
     private final ScalpStrategyService scalpStrategyService;
     private final SwingStrategyService swingStrategyService;
     private final ChartResponseStrategyService chartResponseStrategyService;
@@ -114,6 +116,7 @@ public class TradingSignalEngineService {
             ObjectMapper objectMapper,
             SignalPolicyProperties signalPolicyProperties,
             SystemFeatureToggleService systemFeatureToggleService,
+            AssistantRagService assistantRagService,
             ScalpStrategyService scalpStrategyService,
             SwingStrategyService swingStrategyService,
             ChartResponseStrategyService chartResponseStrategyService,
@@ -136,6 +139,7 @@ public class TradingSignalEngineService {
         this.objectMapper = objectMapper;
         this.signalPolicyProperties = signalPolicyProperties;
         this.systemFeatureToggleService = systemFeatureToggleService;
+        this.assistantRagService = assistantRagService;
         this.scalpStrategyService = scalpStrategyService;
         this.swingStrategyService = swingStrategyService;
         this.chartResponseStrategyService = chartResponseStrategyService;
@@ -272,6 +276,10 @@ public class TradingSignalEngineService {
     }
 
     public SignalDetailDto getSignalDetail(String signalId) {
+        return getSignalDetail(signalId, true);
+    }
+
+    public SignalDetailDto getSignalDetail(String signalId, boolean includeAssistant) {
         TradingSignalEntity signal = tradingSignalRepository.findById(signalId)
                 .orElseThrow(() -> new IllegalArgumentException("signal not found: " + signalId));
         AssetUniverseEntity asset = assetUniverseRepository.findById(signal.getAssetCode()).orElse(null);
@@ -282,6 +290,16 @@ public class TradingSignalEngineService {
         List<String> changeConditions = stringListField(scalpBreakdown, "change_conditions");
         String explainText = firstNonBlank(signal.getExplainText(), textField(scalpBreakdown, "explain_text"));
         String decisionWhy = buildDecisionWhy(signal, explainText, riskChecks, missingRequirements);
+        AssistantRagService.SignalDetailAssistResult assistantAssist = assistantRagService.assistSignalDetail(
+                signal,
+                asset,
+                riskChecks,
+                scalpBreakdown,
+                includeAssistant);
+        String ragContextRefsJson = firstNonBlank(
+                assistantAssist == null ? null : assistantAssist.ragContextRefsJson(),
+                signal.getRagContextRefsJson(),
+                "[]");
         return SignalDetailDto.builder()
                 .signalId(signal.getId())
                 .assetCode(signal.getAssetCode())
@@ -299,7 +317,8 @@ public class TradingSignalEngineService {
                 .newsAlignmentResultJson(signal.getNewsAlignmentResultJson())
                 .dataFreshnessJson(signal.getDataFreshnessJson())
                 .dedupResultJson(signal.getDedupResultJson())
-                .ragContextRefsJson(signal.getRagContextRefsJson())
+                .ragContextRefsJson(ragContextRefsJson)
+                .assistantRag(assistantAssist == null ? null : assistantAssist.insight())
                 .newsEvidence(buildNewsEvidence(signal, scalpBreakdown))
                 .chartEvidence(List.of("MA/추세/변동성/거래량 기반"))
                 .priceEvidence(buildPriceEvidence(signal, scalpBreakdown))

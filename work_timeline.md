@@ -191,3 +191,12 @@
 - [T184] 관리자 진단 확장: `AdminDiagnosticsService.getSignalConfidenceDistribution()`에 전략별 액션/차단사유 분포 및 중복노출 통계 집계(`action_distribution_by_strategy`, `duplicate_exposure_stats`) 추가.
 - [T185] UI 최소 보강(구조 유지): `web/api.js`, `web/app.js`, `web/ui.js`에서 전략패널 카드에 전략목적/상태배지/중복억제/품질저하/핵심지표 표시를 추가하고, 리스크 패널에 전략별 추천·차단/중복노출/차단사유/BUY_LOCK/품질저하/분산경고/참고용 제안 텍스트를 렌더링하도록 확장.
 - [T186] 테스트 초안 보강/검증 제약 기록: `SignalPanelStrategyServiceTest` 신규 추가(차트대응 중립화/단타 데이터부족 상태배지 규칙), 기존 `TradingSignalEngineServicePanelSelectionTest`/`RiskPolicyServiceTest` 생성자 갱신; 로컬 `:api:compileJava` 및 테스트는 JDK21 toolchain 부재로 미실행 상태 유지.
+- [T187] PROMPT-8-REBUILD 5차 착수: RAG/경량모델 보조 계층 범위(상세·trace 보조요약, 규칙엔진 비덮어쓰기, timeout/fallback/circuit breaker, 감사 저장) 요구사항 해석 및 기존 상세/trace/감사 구조 연결 지점 분석.
+- [T188] DB/도메인 확장: `V11__assistant_rag_audit_log.sql` 추가 및 `AssistantRagAuditLogEntity`/`AssistantRagAuditLogRepository` 신규 구현(COMMENT ON TABLE/COLUMN/INDEX 반영)으로 RAG 보조 호출 감사 저장 구조 확보.
+- [T189] 설정 외부화: `AssistantRagProperties(app.assistant-rag.*)` 추가 및 `api/application.yml`, `api/application-local.yml`에 timeout/latency/circuit breaker/컨텍스트 제한/버전값 기본 설정 반영.
+- [T190] RAG 보조 계층 구현: `AssistantRagContextBuilderService`(뉴스-종목 링크/뉴스/시세/바/시그널감사 컨텍스트 + `rag_context_refs_json` 생성), `AssistantRagModelClient` 계약, `TemplateAssistantRagModelClient`(경량 템플릿 기반 구조화 출력), `AssistantRagService`(timeout/fallback/circuit breaker/스키마 검증/감사로그 저장) 추가.
+- [T191] 규칙엔진 보호 정책 반영: `AssistantRagService`가 `rule_engine_action_locked=true` 및 base action 일치 검증을 수행하고, 불일치/스키마 위반/timeout/컨텍스트 오류 시 규칙 기반 fallback 설명으로 자동 전환하도록 구현.
+- [T192] API 확장(상세/trace): `SignalDetailDto`에 `assistant_rag` 필드 추가, `InsightController`/`TradingSignalEngineService`의 시그널 상세 API에 `assistant=true/false` 옵션 추가 및 보조설명 주입, `AdminDiagnosticsController`/`AdminDiagnosticsService` trace 상세에 사람친화적 `assistant_summary`와 `assistant_rag_audits` 목록/카운트 추가.
+- [T193] UI 최소 보강(구조 유지): `web/ui.js` 시그널 상세 모달에 RAG 보조요약/근거요약/주의점/추가조건 표시를 추가하고, 관리자 trace 상세 영역에 `assistant_summary`/source/fallback/highlights/cautions 표시를 추가.
+- [T194] 테스트 초안 보강: `AssistantRagServiceTest` 신규 추가(정상, timeout fallback, feature toggle 비활성화, 규칙엔진 액션 불일치 fallback, trace 요약 케이스), `TradingSignalEngineServicePanelSelectionTest` 생성자에 `AssistantRagService` mock 주입 반영.
+- [T195] 로컬 검증 제약 기록(5차): `./gradlew.bat :core:compileJava :api:compileJava :api:test --tests ...` 실행 시 Windows 로컬 JDK21 toolchain 부재(현재 JDK25만 설치, toolchain download repo 미설정)로 컴파일/테스트 미실행 상태 확인.
