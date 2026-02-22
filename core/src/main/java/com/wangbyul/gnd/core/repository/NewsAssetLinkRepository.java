@@ -18,7 +18,11 @@ public interface NewsAssetLinkRepository extends JpaRepository<NewsAssetLinkEnti
 
     Optional<NewsAssetLinkEntity> findTop1ByAssetCodeOrderByCreatedAtDesc(String assetCode);
 
+    Optional<NewsAssetLinkEntity> findByNewsIdAndAssetCodeAndLinkType(String newsId, String assetCode, com.wangbyul.gnd.core.domain.NewsLinkType linkType);
+
     List<NewsAssetLinkEntity> findTop200ByNewsIdOrderByConfidenceDesc(String newsId);
+
+    List<NewsAssetLinkEntity> findTop500ByAssetCodeAndCreatedAtAfterOrderByCreatedAtDesc(String assetCode, OffsetDateTime since);
 
     List<NewsAssetLinkEntity> findTop5000ByCreatedAtAfterOrderByCreatedAtDesc(OffsetDateTime since);
 

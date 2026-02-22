@@ -138,7 +138,36 @@ public class TradingSignalEntity {
     private String blockedReason;
 
     @Column(name = "reason_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("시그널 생성 전체 근거 요약 JSON")
     private String reasonJson = "{}";
+
+    @Column(name = "top_positive_factors_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("상위 긍정 요인 목록 JSON")
+    private String topPositiveFactorsJson = "[]";
+
+    @Column(name = "top_negative_factors_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("상위 부정 요인 목록 JSON")
+    private String topNegativeFactorsJson = "[]";
+
+    @Column(name = "explain_text", columnDefinition = "text")
+    @Comment("상세보기용 설명 텍스트(왜 WATCH/HOLD/BUY인지)")
+    private String explainText;
+
+    @Column(name = "news_alignment_result_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("뉴스-가격 시간정렬 검증 결과 JSON")
+    private String newsAlignmentResultJson = "{}";
+
+    @Column(name = "data_freshness_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("입력 데이터 신선도(뉴스/시세/거래량) JSON")
+    private String dataFreshnessJson = "{}";
+
+    @Column(name = "dedup_result_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("중복기사/중복링크 처리 결과 JSON")
+    private String dedupResultJson = "{}";
+
+    @Column(name = "rag_context_refs_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("향후 RAG 연동용 참조 컨텍스트 목록(JSON 배열, 현재 빈값 허용)")
+    private String ragContextRefsJson = "[]";
 
     @Column(name = "model_version", nullable = false, length = 64)
     private String modelVersion = "rule-heuristic-v2";
@@ -166,6 +195,27 @@ public class TradingSignalEntity {
         }
         if (pressureReasonJson == null || pressureReasonJson.isBlank()) {
             pressureReasonJson = "{}";
+        }
+        if (reasonJson == null || reasonJson.isBlank()) {
+            reasonJson = "{}";
+        }
+        if (topPositiveFactorsJson == null || topPositiveFactorsJson.isBlank()) {
+            topPositiveFactorsJson = "[]";
+        }
+        if (topNegativeFactorsJson == null || topNegativeFactorsJson.isBlank()) {
+            topNegativeFactorsJson = "[]";
+        }
+        if (newsAlignmentResultJson == null || newsAlignmentResultJson.isBlank()) {
+            newsAlignmentResultJson = "{}";
+        }
+        if (dataFreshnessJson == null || dataFreshnessJson.isBlank()) {
+            dataFreshnessJson = "{}";
+        }
+        if (dedupResultJson == null || dedupResultJson.isBlank()) {
+            dedupResultJson = "{}";
+        }
+        if (ragContextRefsJson == null || ragContextRefsJson.isBlank()) {
+            ragContextRefsJson = "[]";
         }
     }
 }

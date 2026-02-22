@@ -18,6 +18,8 @@ public interface MarketQuoteSnapshotRepository extends JpaRepository<MarketQuote
 
     List<MarketQuoteSnapshotEntity> findTop2ByAssetCodeOrderBySnapshotUtcDesc(String assetCode);
 
+    List<MarketQuoteSnapshotEntity> findTop120ByAssetCodeOrderBySnapshotUtcDesc(String assetCode);
+
     long countByCreatedAtAfter(OffsetDateTime since);
 
     long countByProviderNameAndCreatedAtAfter(String providerName, OffsetDateTime since);

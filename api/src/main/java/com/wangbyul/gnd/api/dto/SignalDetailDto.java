@@ -47,11 +47,47 @@ public class SignalDetailDto {
     @JsonProperty("pressure_reason_json")
     private String pressureReasonJson;
 
+    @JsonProperty("top_positive_factors_json")
+    private String topPositiveFactorsJson;
+
+    @JsonProperty("top_negative_factors_json")
+    private String topNegativeFactorsJson;
+
+    @JsonProperty("explain_text")
+    private String explainText;
+
+    @JsonProperty("news_alignment_result_json")
+    private String newsAlignmentResultJson;
+
+    @JsonProperty("data_freshness_json")
+    private String dataFreshnessJson;
+
+    @JsonProperty("dedup_result_json")
+    private String dedupResultJson;
+
+    @JsonProperty("rag_context_refs_json")
+    private String ragContextRefsJson;
+
     @JsonProperty("news_evidence")
     private List<String> newsEvidence;
 
     @JsonProperty("chart_evidence")
     private List<String> chartEvidence;
+
+    @JsonProperty("price_evidence")
+    private List<String> priceEvidence;
+
+    @JsonProperty("risk_evidence")
+    private List<String> riskEvidence;
+
+    @JsonProperty("decision_why")
+    private String decisionWhy;
+
+    @JsonProperty("missing_requirements")
+    private List<String> missingRequirements;
+
+    @JsonProperty("change_conditions")
+    private List<String> changeConditions;
 
     @JsonProperty("pressure_analysis")
     private PressureAnalysisDto pressureAnalysis;

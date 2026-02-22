@@ -263,6 +263,11 @@ public class TradingSignalEngineService {
         AssetUniverseEntity asset = assetUniverseRepository.findById(signal.getAssetCode()).orElse(null);
         List<String> riskChecks = parseRiskChecks(signal.getRiskChecks());
         PressureAnalysisDto pressure = getPressureAnalysis(signal.getAssetCode());
+        Map<String, Object> scalpBreakdown = parseJsonMap(signal.getProbabilityReasonBreakdownJson());
+        List<String> missingRequirements = stringListField(scalpBreakdown, "missing_requirements");
+        List<String> changeConditions = stringListField(scalpBreakdown, "change_conditions");
+        String explainText = firstNonBlank(signal.getExplainText(), textField(scalpBreakdown, "explain_text"));
+        String decisionWhy = buildDecisionWhy(signal, explainText, riskChecks, missingRequirements);
         return SignalDetailDto.builder()
                 .signalId(signal.getId())
                 .assetCode(signal.getAssetCode())
@@ -274,8 +279,20 @@ public class TradingSignalEngineService {
                 .combinedConfidence(signal.getCombinedConfidence())
                 .probabilityReasonBreakdownJson(signal.getProbabilityReasonBreakdownJson())
                 .pressureReasonJson(signal.getPressureReasonJson())
-                .newsEvidence(List.of("최근 1주 뉴스량/긍부정 비율 기반"))
+                .topPositiveFactorsJson(signal.getTopPositiveFactorsJson())
+                .topNegativeFactorsJson(signal.getTopNegativeFactorsJson())
+                .explainText(explainText)
+                .newsAlignmentResultJson(signal.getNewsAlignmentResultJson())
+                .dataFreshnessJson(signal.getDataFreshnessJson())
+                .dedupResultJson(signal.getDedupResultJson())
+                .ragContextRefsJson(signal.getRagContextRefsJson())
+                .newsEvidence(buildNewsEvidence(signal, scalpBreakdown))
                 .chartEvidence(List.of("MA/추세/변동성/거래량 기반"))
+                .priceEvidence(buildPriceEvidence(signal, scalpBreakdown))
+                .riskEvidence(buildRiskEvidence(signal, riskChecks))
+                .decisionWhy(decisionWhy)
+                .missingRequirements(missingRequirements)
+                .changeConditions(changeConditions)
                 .pressureAnalysis(pressure)
                 .riskChecks(riskChecks)
                 .blockedReason(signal.getBlockedReason())
@@ -370,6 +387,14 @@ public class TradingSignalEngineService {
         signal.setBadNewsProbability(scalp.badNewsProbability());
         signal.setNewsConfidence(scalp.newsConfidence());
         signal.setProbabilityReasonBreakdownJson(scalp.probabilityReasonBreakdownJson());
+        Map<String, Object> scalpBreakdown = parseJsonMap(scalp.probabilityReasonBreakdownJson());
+        signal.setTopPositiveFactorsJson(toJsonValue(mapField(scalpBreakdown, "top_positive_factors", List.of())));
+        signal.setTopNegativeFactorsJson(toJsonValue(mapField(scalpBreakdown, "top_negative_factors", List.of())));
+        signal.setExplainText(resolveSignalExplainText(riskDecision.finalAction(), scalpBreakdown, riskDecision, alignment));
+        signal.setNewsAlignmentResultJson(toJsonValue(mapField(scalpBreakdown, "news_alignment_result", Map.of())));
+        signal.setDataFreshnessJson(toJsonValue(mapField(scalpBreakdown, "data_freshness", Map.of())));
+        signal.setDedupResultJson(toJsonValue(mapField(scalpBreakdown, "dedup_result", Map.of())));
+        signal.setRagContextRefsJson(toJsonValue(mapField(scalpBreakdown, "rag_context_refs", List.of())));
         signal.setChartConfidence(chart.chartConfidence());
         signal.setCombinedConfidence(combinedAfterAlignment);
         signal.setWeeklyContextScore(weekly.weeklyContextScore());
@@ -776,6 +801,159 @@ public class TradingSignalEngineService {
         } catch (Exception ignored) {
             return List.of(rawJson);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseJsonMap(String rawJson) {
+        if (rawJson == null || rawJson.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Object parsed = objectMapper.readValue(rawJson, Map.class);
+            if (parsed instanceof Map<?, ?> map) {
+                Map<String, Object> result = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    result.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+                return result;
+            }
+        } catch (Exception ignored) {
+        }
+        return new LinkedHashMap<>();
+    }
+
+    private Object mapField(Map<String, Object> map, String key, Object fallback) {
+        if (map == null || key == null) {
+            return fallback;
+        }
+        Object value = map.get(key);
+        return value == null ? fallback : value;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> stringListField(Map<String, Object> map, String key) {
+        Object value = mapField(map, key, List.of());
+        if (value instanceof List<?> rows) {
+            return rows.stream().map(v -> v == null ? "" : String.valueOf(v)).filter(v -> !v.isBlank()).toList();
+        }
+        return List.of();
+    }
+
+    private String textField(Map<String, Object> map, String key) {
+        Object value = mapField(map, key, null);
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim();
+        return text.isBlank() ? null : text;
+    }
+
+    private String toJsonValue(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value == null ? Map.of() : value);
+        } catch (Exception ignored) {
+            return "{}";
+        }
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String resolveSignalExplainText(
+            SignalActionType action,
+            Map<String, Object> scalpBreakdown,
+            RiskDecision riskDecision,
+            TimeAlignmentValidationResult alignment) {
+        String dataState = textField(scalpBreakdown, "data_state");
+        String baseExplain = textField(scalpBreakdown, "explain_text");
+        StringBuilder sb = new StringBuilder();
+        sb.append("최종 액션=").append(action == null ? "WATCH" : action.name());
+        if (riskDecision != null && riskDecision.blockedReason() != null && !riskDecision.blockedReason().isBlank()) {
+            sb.append(" · 리스크 차단=").append(riskDecision.blockedReason());
+        }
+        if (alignment != null && alignment.futureDataDetected()) {
+            sb.append(" · 시간정렬 경고=FUTURE_DATA_DETECTED");
+        }
+        if (dataState != null) {
+            sb.append(" · 데이터상태=").append(dataState);
+        }
+        if (baseExplain != null && !baseExplain.isBlank()) {
+            sb.append(" · ").append(baseExplain);
+        }
+        return sb.toString();
+    }
+
+    private List<String> buildNewsEvidence(TradingSignalEntity signal, Map<String, Object> scalpBreakdown) {
+        List<String> rows = new ArrayList<>();
+        rows.add("뉴스 매핑/이벤트/감성/신뢰도 기반 RULE_V1");
+        String dataState = textField(scalpBreakdown, "data_state");
+        if (dataState != null) {
+            rows.add("데이터 상태: " + dataState);
+        }
+        Object mappedCount = mapField(scalpBreakdown, "mapped_news_count", null);
+        Object eligibleCount = mapField(scalpBreakdown, "eligible_news_count", null);
+        if (mappedCount != null || eligibleCount != null) {
+            rows.add("매핑 뉴스 " + String.valueOf(mappedCount == null ? 0 : mappedCount)
+                    + "건 / 유효 뉴스 " + String.valueOf(eligibleCount == null ? 0 : eligibleCount) + "건");
+        }
+        return rows;
+    }
+
+    private List<String> buildPriceEvidence(TradingSignalEntity signal, Map<String, Object> scalpBreakdown) {
+        List<String> rows = new ArrayList<>();
+        Map<String, Object> freshness = parseJsonMap(signal.getDataFreshnessJson());
+        Object coverage = freshness.get("price_data_coverage_ratio");
+        if (coverage != null) {
+            rows.add("가격/거래량 데이터 커버리지: " + coverage);
+        } else {
+            rows.add("가격/거래량 반응 데이터 기반(가능한 범위)");
+        }
+        Map<String, Object> dedup = parseJsonMap(signal.getDedupResultJson());
+        Object dedupApplied = dedup.get("duplicate_article_penalty_applied");
+        if (dedupApplied != null) {
+            rows.add("중복기사 감점 적용: " + dedupApplied);
+        }
+        return rows;
+    }
+
+    private List<String> buildRiskEvidence(TradingSignalEntity signal, List<String> riskChecks) {
+        List<String> rows = new ArrayList<>();
+        rows.add("리스크 정책 + 시간정렬 검증 기반");
+        if (signal.getBlockedReason() != null && !signal.getBlockedReason().isBlank()) {
+            rows.add("차단 사유: " + signal.getBlockedReason());
+        }
+        if (riskChecks != null && !riskChecks.isEmpty()) {
+            rows.add("리스크 체크 " + riskChecks.size() + "건");
+        }
+        return rows;
+    }
+
+    private String buildDecisionWhy(
+            TradingSignalEntity signal,
+            String explainText,
+            List<String> riskChecks,
+            List<String> missingRequirements) {
+        String action = signal.getAction() == null ? "WATCH" : signal.getAction().name();
+        StringBuilder sb = new StringBuilder();
+        sb.append(action).append(" 판단 근거: ");
+        if (explainText != null && !explainText.isBlank()) {
+            sb.append(explainText);
+        } else {
+            sb.append("결합 신뢰도=").append(scale(signal.getCombinedConfidence()));
+        }
+        if (missingRequirements != null && !missingRequirements.isEmpty()) {
+            sb.append(" · 부족요건=").append(missingRequirements.get(0));
+        }
+        if (riskChecks != null && !riskChecks.isEmpty()) {
+            sb.append(" · 리스크체크=").append(riskChecks.size()).append("건");
+        }
+        return sb.toString();
     }
 
     private BigDecimal scale(BigDecimal value) {

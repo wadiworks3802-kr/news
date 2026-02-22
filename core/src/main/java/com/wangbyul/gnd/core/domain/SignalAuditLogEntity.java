@@ -80,6 +80,34 @@ public class SignalAuditLogEntity {
     @Comment("리스크 점검 결과")
     private String riskChecksJson = "{}";
 
+    @Column(name = "top_positive_factors_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("상위 긍정 요인 목록 JSON")
+    private String topPositiveFactorsJson = "[]";
+
+    @Column(name = "top_negative_factors_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("상위 부정 요인 목록 JSON")
+    private String topNegativeFactorsJson = "[]";
+
+    @Column(name = "explain_text", columnDefinition = "text")
+    @Comment("감사용 설명 텍스트")
+    private String explainText;
+
+    @Column(name = "news_alignment_result_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("뉴스-가격 시간정렬 검증 결과 JSON")
+    private String newsAlignmentResultJson = "{}";
+
+    @Column(name = "data_freshness_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("입력 데이터 신선도 JSON")
+    private String dataFreshnessJson = "{}";
+
+    @Column(name = "dedup_result_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("중복기사/중복링크 처리 결과 JSON")
+    private String dedupResultJson = "{}";
+
+    @Column(name = "rag_context_refs_json", nullable = false, columnDefinition = "jsonb")
+    @Comment("향후 RAG 연동용 참조 컨텍스트 목록(JSON 배열)")
+    private String ragContextRefsJson = "[]";
+
     @Enumerated(EnumType.STRING)
     @Column(name = "decision_before_risk", length = 24)
     @Comment("리스크 적용 전 의사결정")
@@ -131,6 +159,24 @@ public class SignalAuditLogEntity {
         }
         if (riskChecksJson == null || riskChecksJson.isBlank()) {
             riskChecksJson = "{}";
+        }
+        if (topPositiveFactorsJson == null || topPositiveFactorsJson.isBlank()) {
+            topPositiveFactorsJson = "[]";
+        }
+        if (topNegativeFactorsJson == null || topNegativeFactorsJson.isBlank()) {
+            topNegativeFactorsJson = "[]";
+        }
+        if (newsAlignmentResultJson == null || newsAlignmentResultJson.isBlank()) {
+            newsAlignmentResultJson = "{}";
+        }
+        if (dataFreshnessJson == null || dataFreshnessJson.isBlank()) {
+            dataFreshnessJson = "{}";
+        }
+        if (dedupResultJson == null || dedupResultJson.isBlank()) {
+            dedupResultJson = "{}";
+        }
+        if (ragContextRefsJson == null || ragContextRefsJson.isBlank()) {
+            ragContextRefsJson = "[]";
         }
     }
 }

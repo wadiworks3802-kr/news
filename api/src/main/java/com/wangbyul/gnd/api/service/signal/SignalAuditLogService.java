@@ -62,6 +62,13 @@ public class SignalAuditLogService {
         entity.setRuleHitsJson(maskSensitiveJson(toJson(ruleHits)));
         entity.setRiskChecksJson(maskSensitiveJson(toJson(
                 riskChecksPayload == null ? Map.of("risk_checks", java.util.List.of()) : riskChecksPayload)));
+        entity.setTopPositiveFactorsJson(maskSensitiveJson(signal.getTopPositiveFactorsJson()));
+        entity.setTopNegativeFactorsJson(maskSensitiveJson(signal.getTopNegativeFactorsJson()));
+        entity.setExplainText(signal.getExplainText());
+        entity.setNewsAlignmentResultJson(maskSensitiveJson(signal.getNewsAlignmentResultJson()));
+        entity.setDataFreshnessJson(maskSensitiveJson(signal.getDataFreshnessJson()));
+        entity.setDedupResultJson(maskSensitiveJson(signal.getDedupResultJson()));
+        entity.setRagContextRefsJson(maskSensitiveJson(signal.getRagContextRefsJson()));
         entity.setDecisionBeforeRisk(decisionBeforeRisk);
         entity.setDecisionAfterRisk(decisionAfterRisk);
         entity.setBlockedReason(blockedReason);

@@ -175,3 +175,11 @@
 - [T168] 시장데이터 수집 연계 보강: `MarketDataCollectionService` quote 수집 시 `asset_universe.last_quote_received_at` 갱신으로 유니버스 품질/신선도 정책과 실시간 수집 경로 연결.
 - [T169] 테스트 초안 추가: `TradingSignalEngineServicePanelSelectionTest`(패널 중복억제/메타 확장), `UniverseRebuildServiceDiagnosticsTest`(레이어/테마코드/신선도 진단 키) 신규 작성.
 - [T170] 로컬 검증 제약 재확인: `./gradlew ...test` 실행 시 Gradle toolchain 21 미설치 및 toolchain download repository 미설정으로 테스트 미실행(Windows 로컬 JDK25만 존재) 상태 기록.
+- [T171] PROMPT-8-REBUILD 3차 착수: 뉴스-종목 매핑 근거 저장 + 50:50 수렴 완화 + 상세 설명 강화 범위 요구사항을 기준으로 `news_asset_link`/`trading_signal`/`signal_audit_log` 확장 설계 확정.
+- [T172] 스키마 확장: `V10__news_asset_mapping_signal_explain_upgrade.sql` 추가(`news_asset_link` 매핑근거 필드, `trading_signal`/`signal_audit_log` 설명·신선도·중복 결과 JSON 필드, TABLE/COLUMN/INDEX COMMENT 반영).
+- [T173] 도메인/리포지토리 확장: `NewsAssetLinkEntity`, `TradingSignalEntity`, `SignalAuditLogEntity`에 3차 필드 및 한글 주석 추가, `NewsAssetLinkRepository`/`MarketQuoteSnapshotRepository`에 매핑 업서트·최근 시세 조회 메서드 보강.
+- [T174] 뉴스-종목 매핑 파이프라인 고도화: `ScalpNewsSignalService`에 alias 사전 매칭/테마 키워드 매칭/이벤트 유형 분류/영향 방향·기간 추정/중복기사 감점/복수 종목 링크 업서트(`news_asset_link`) 저장 로직 구현.
+- [T175] RULE_V1 확률 계산 재구성: `ScalpNewsSignalService`에 뉴스량 변화율, 이벤트 가중치, 중복기사 감점, 출처 신뢰도, 뉴스 후 가격반응(5m/15m/1h), 거래량 변화율, 번역 지연 패널티, 시간정렬 패널티를 반영한 독립 확률 계산 및 `uncertainty_score`/설명 필드 생성 반영(`good+bad=1` 강제 제거).
+- [T176] 상세보기/감사 확장 연동: `TradingSignalEngineService`, `SignalDetailDto`, `SignalAuditLogService`에 상·하위 요인/설명문/정렬결과/신선도/중복결과 저장 및 상세 API 응답(왜 WATCH/HOLD인지, 부족요건/변경조건) 노출 반영.
+- [T177] UI 최소 보강: `web/ui.js` 상세 모달에 `decision_why`, `missing_requirements`, `change_conditions` 표시 및 `NO_MATCHED_NEWS`/`INSUFFICIENT_DATA` 상태에서 뉴스기반 확률 보류 문구 표출 추가(기존 패널 구조 유지).
+- [T178] 테스트 초안 보강/로컬 검증 제약 기록: `ScalpNewsSignalServiceTest`에 이벤트 기반 확률 분산/매핑 근거 저장 검증 시나리오 추가, `./gradlew :api:compileJava -x test`는 JDK21 toolchain 미탐지로 미실행 상태 재확인.

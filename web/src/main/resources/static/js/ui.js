@@ -510,11 +510,26 @@ window.ui = {
     }
     const pressure = detail.pressure_analysis || {};
     const riskChecks = Array.isArray(detail.risk_checks) ? detail.risk_checks : [];
+    const missingRequirements = Array.isArray(detail.missing_requirements) ? detail.missing_requirements : [];
+    const changeConditions = Array.isArray(detail.change_conditions) ? detail.change_conditions : [];
+    let scalpBreakdown = {};
+    try {
+      scalpBreakdown = detail.probability_reason_breakdown_json ? JSON.parse(detail.probability_reason_breakdown_json) : {};
+    } catch (e) {
+      scalpBreakdown = {};
+    }
+    const dataState = String(scalpBreakdown.data_state || "");
+    const probabilitySummary = (dataState === "NO_MATCHED_NEWS" || dataState === "INSUFFICIENT_DATA")
+      ? `뉴스기반 확률 보류 (${dataState})`
+      : `호재확률 ${Number(detail.good_news_probability ?? 0).toFixed(3)} / 악재확률 ${Number(detail.bad_news_probability ?? 0).toFixed(3)}`;
     const body = `
       <div class="signal-detail-grid">
         <section class="signal-detail-card"><strong>${this.escapeHtml(detail.asset_name || detail.asset_code || "-")}</strong> · ${this.escapeHtml(detail.action || "WATCH")}</section>
-        <section class="signal-detail-card">호재확률 ${Number(detail.good_news_probability ?? 0).toFixed(3)} / 악재확률 ${Number(detail.bad_news_probability ?? 0).toFixed(3)}</section>
+        <section class="signal-detail-card">${this.escapeHtml(probabilitySummary)}</section>
         <section class="signal-detail-card">주간컨텍스트 ${Number(detail.weekly_context_score ?? 0).toFixed(3)} / 결합신뢰 ${Number(detail.combined_confidence ?? 0).toFixed(3)}</section>
+        <section class="signal-detail-card">판단 사유: ${this.escapeHtml(detail.decision_why || detail.explain_text || "-")}</section>
+        <section class="signal-detail-card">부족한 점: ${this.escapeHtml(missingRequirements.join(" / ") || "-")}</section>
+        <section class="signal-detail-card">변경 조건: ${this.escapeHtml(changeConditions.join(" / ") || "-")}</section>
         <section class="signal-detail-card">압력분석: sell_detected=${Boolean(pressure.sell_pressure_detected)} / sell_negative=${Boolean(pressure.sell_pressure_is_negative)} / buy_detected=${Boolean(pressure.buy_pressure_detected)} / buy_positive=${Boolean(pressure.buy_pressure_is_positive)} / volume_same=${Boolean(pressure.volume_regime_same)}</section>
         <section class="signal-detail-card">리스크체크: ${this.escapeHtml(riskChecks.join(", ") || "-")}</section>
         <section class="signal-detail-card">주문 차단사유: ${this.escapeHtml(detail.blocked_reason || "없음")}</section>
