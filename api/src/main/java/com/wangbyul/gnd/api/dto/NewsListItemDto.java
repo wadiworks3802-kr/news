@@ -21,6 +21,7 @@ public class NewsListItemDto {
 
     private String id;
     private String country;
+    private String lang;
     private String source;
     private String url;
     private List<String> category;
@@ -45,4 +46,7 @@ public class NewsListItemDto {
 
     @JsonProperty("source_icon_url")
     private String sourceIconUrl;
+
+    @JsonProperty("translation_pending")
+    private Boolean translationPending;
 }

@@ -989,7 +989,7 @@ body {
 
 .news-visual {
   position: relative;
-  height: 92px;
+  height: 118px;
   border-radius: 10px;
   overflow: hidden;
   background: linear-gradient(135deg, #e2ecff 0%, #c8dbfb 46%, #b9d2f2 100%);
@@ -1073,6 +1073,17 @@ body {
 .evidence-btn {
   border: 0;
   cursor: pointer;
+}
+
+.news-translate-btn {
+  border: 0;
+  cursor: pointer;
+  background: #fff2dc;
+  color: #8f4d00;
+}
+
+.news-translate-btn:hover {
+  background: #ffe7c4;
 }
 
 .empty-box {

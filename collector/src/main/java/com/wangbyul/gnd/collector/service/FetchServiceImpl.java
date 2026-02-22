@@ -233,6 +233,7 @@ public class FetchServiceImpl implements FetchService {
                 String description = firstNonBlank(
                         childText(element, "description"),
                         childText(element, "content:encoded"));
+                description = enrichDescriptionWithFeedImage(description, extractFeedImageUrl(element));
                 OffsetDateTime pubUtc = parseDate(firstNonBlank(
                         childText(element, "pubDate"),
                         childText(element, "dc:date"),
@@ -252,6 +253,7 @@ public class FetchServiceImpl implements FetchService {
                         childText(element, "summary"),
                         childText(element, "content"));
                 String link = resolveAtomLink(element);
+                description = enrichDescriptionWithFeedImage(description, extractFeedImageUrl(element));
                 OffsetDateTime pubUtc = parseDate(firstNonBlank(
                         childText(element, "published"),
                         childText(element, "updated")));
@@ -293,6 +295,67 @@ public class FetchServiceImpl implements FetchService {
         }
         String text = nodes.item(0).getTextContent();
         return text == null ? "" : text.trim();
+    }
+
+    /**
+     * RSS/Atom 본문에 이미지 태그가 없더라도 media:thumbnail/enclosure의 URL을
+     * 앞에 삽입해 이후 API 레이어에서 썸네일 추출이 가능하도록 보강한다.
+     */
+    private String enrichDescriptionWithFeedImage(String description, String imageUrl) {
+        String body = defaultIfBlank(description, "");
+        String safeImage = safeUrl(defaultIfBlank(imageUrl, ""), "");
+        if (safeImage.isBlank()) {
+            return body;
+        }
+        String lower = body.toLowerCase(Locale.ROOT);
+        if (lower.contains("<img") || lower.contains("&lt;img")) {
+            return body;
+        }
+        return "<img src=\"" + safeImage + "\" alt=\"thumb\" /> " + body;
+    }
+
+    /**
+     * RSS/Atom 엔트리에서 대표 이미지 URL 추출.
+     * - media:thumbnail / media:content / enclosure 순으로 확인
+     * - image/* 타입만 우선 허용하고, 타입 정보 없으면 URL만으로 보조 허용
+     */
+    private String extractFeedImageUrl(Element entry) {
+        String fromMediaThumb = extractElementAttribute(entry, "media:thumbnail", "url", true);
+        if (!fromMediaThumb.isBlank()) {
+            return fromMediaThumb;
+        }
+        String fromMediaContent = extractElementAttribute(entry, "media:content", "url", true);
+        if (!fromMediaContent.isBlank()) {
+            return fromMediaContent;
+        }
+        String fromEnclosure = extractElementAttribute(entry, "enclosure", "url", true);
+        if (!fromEnclosure.isBlank()) {
+            return fromEnclosure;
+        }
+        return "";
+    }
+
+    private String extractElementAttribute(Element parent, String tagName, String attrName, boolean imageOnly) {
+        NodeList nodes = parent.getElementsByTagName(tagName);
+        for (int i = 0; i < nodes.getLength(); i++) {
+            Node node = nodes.item(i);
+            if (!(node instanceof Element element)) {
+                continue;
+            }
+            String rawUrl = defaultIfBlank(element.getAttribute(attrName), "");
+            String url = safeUrl(rawUrl, "");
+            if (url.isBlank()) {
+                continue;
+            }
+            if (!imageOnly) {
+                return url;
+            }
+            String type = defaultIfBlank(element.getAttribute("type"), "").toLowerCase(Locale.ROOT);
+            if (type.isBlank() || type.startsWith("image/")) {
+                return url;
+            }
+        }
+        return "";
     }
 
     private OffsetDateTime parseDate(String raw) {

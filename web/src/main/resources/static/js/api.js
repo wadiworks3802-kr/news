@@ -17,6 +17,20 @@ window.api = {
     }
     return body;
   },
+  async requestNewsTranslate(newsId, params = {}, options = {}) {
+    const base = window.API_BASE || "http://localhost:8080";
+    const qs = new URLSearchParams(params).toString();
+    const url = `${base}/api/news/${encodeURIComponent(newsId)}/translate${qs ? `?${qs}` : ""}`;
+    const res = await fetch(url, {
+      method: "POST",
+      signal: options.signal
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      throw body;
+    }
+    return body;
+  },
   async getInsight(category, period, country, options = {}) {
     const base = window.API_BASE || "http://localhost:8080";
     const qs = new URLSearchParams({ category, period, country }).toString();

@@ -114,6 +114,30 @@ function confirmRiskyToggleChange(featureKey, enabled) {
   return window.confirm(`[최종확인] ${featureKey} ${mode} 적용을 확정합니다.`);
 }
 
+async function requestManualNewsTranslation(newsId, buttonEl) {
+  const id = String(newsId || "").trim();
+  if (!id) {
+    return;
+  }
+
+  const $button = $(buttonEl);
+  const originalText = $button.text();
+  $button.prop("disabled", true).text("번역중...");
+  ui.setLiveState("선택 기사 한글 번역 요청 중...");
+
+  try {
+    const result = await api.requestNewsTranslate(id, { mode: "sync" });
+    const pending = Boolean(result?.data?.translation_pending);
+    ui.setLiveState(pending ? "번역 요청 처리됨 (추가 처리중)" : "한글 번역 반영 완료");
+    await loadNews({ useCurrentState: true, skipPush: true, forceWhenHidden: true });
+  } catch (err) {
+    ui.setLiveState("한글 번역 요청 실패");
+    alert(`번역 요청 실패: ${err?.message || err?.code || "요청 실패"}`);
+  } finally {
+    $button.prop("disabled", false).text(originalText);
+  }
+}
+
 async function loadStockSignals(seq) {
   const controller = createController();
   try {
@@ -984,6 +1008,7 @@ $(function () {
     loadNews,
     openCategoryDetail,
     goHomeFeed,
+    requestManualNewsTranslation,
     openSignalDetail,
     switchTab,
     () => loadAssistantDashboard({ forceWhenHidden: true, skipPush: true }),

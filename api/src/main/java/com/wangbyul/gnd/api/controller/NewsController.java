@@ -34,6 +34,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -60,6 +61,23 @@ public class NewsController {
     /** body_raw 에서 첫 이미지 src를 찾기 위한 정규식 */
     private static final java.util.regex.Pattern IMG_SRC_PATTERN = java.util.regex.Pattern.compile(
             "<img[^>]*src\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
+    /** lazy-load 계열 이미지 속성(data-src/data-original/data-lazy-src) 추출 */
+    private static final java.util.regex.Pattern IMG_LAZY_SRC_PATTERN = java.util.regex.Pattern.compile(
+            "<img[^>]*(?:data-src|data-original|data-lazy-src)\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
+    /** srcset 첫 후보 URL 추출 */
+    private static final java.util.regex.Pattern IMG_SRCSET_PATTERN = java.util.regex.Pattern.compile(
+            "<img[^>]*srcset\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
+    /** og:image/twitter:image 메타 태그 추출 (property/name 위치 무관) */
+    private static final java.util.regex.Pattern META_IMAGE_PATTERN = java.util.regex.Pattern.compile(
+            "<meta[^>]*(?:property|name)\\s*=\\s*['\\\"](?:og:image|twitter:image)['\\\"][^>]*content\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]|"
+                    + "<meta[^>]*content\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"][^>]*(?:property|name)\\s*=\\s*['\\\"](?:og:image|twitter:image)['\\\"]",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
+    /** HTML 외 일반 텍스트에 노출된 이미지 URL 추출 */
+    private static final java.util.regex.Pattern PLAIN_IMAGE_URL_PATTERN = java.util.regex.Pattern.compile(
+            "(https?://[^\\s\\\"'<>]+\\.(?:jpg|jpeg|png|webp|gif)(?:\\?[^\\s\\\"'<>]*)?)",
             java.util.regex.Pattern.CASE_INSENSITIVE);
 
     private final NewsRepository newsRepository;
@@ -200,6 +218,44 @@ public class NewsController {
                 "translation_pending", translationPending));
     }
 
+    /**
+     * 수동 번역 버튼용 API.
+     * 기본은 동기 번역(sync)으로 처리하고, 필요 시 async 큐 등록도 허용한다.
+     */
+    @PostMapping("/news/{id}/translate")
+    public ApiEnvelope<Map<String, Object>> requestNewsTranslate(
+            @PathVariable String id,
+            @RequestParam(defaultValue = "sync") @Pattern(regexp = "^(sync|async)$") String mode) {
+        NewsEntity news = newsRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("news not found: " + id));
+
+        boolean processed = false;
+        boolean queued = false;
+        if ("async".equalsIgnoreCase(mode)) {
+            queued = newsLocalizationService.queueTranslation(id);
+        } else {
+            processed = newsLocalizationService.translateNow(id);
+        }
+
+        // 수동 번역 직후에는 짧은 TTL 캐시보다 최신 DB 결과가 우선 보이도록 목록 캐시를 비운다.
+        evictNewsListCaches();
+
+        NewsEntity refreshed = newsRepository.findById(id).orElse(news);
+        NewsLocalizationService.LocalizedContent localized = newsLocalizationService.localizeForView(refreshed, "ko");
+
+        return envelope(
+                Map.of(
+                        "news_id", refreshed.getId(),
+                        "mode", mode,
+                        "processed", processed,
+                        "queued", queued,
+                        "title_ko", localized.title(),
+                        "summary_ko", localized.summary(),
+                        "translation_pending", localized.translationPending(),
+                        "translated_at_utc", refreshed.getTranslatedAtUtc() == null ? "" : refreshed.getTranslatedAtUtc().toString()),
+                Map.of("cache_evicted", true));
+    }
+
     private OffsetDateTime[] resolvePeriod(String period) {
         OffsetDateTime now = OffsetDateTime.now();
         return switch (period) {
@@ -239,6 +295,7 @@ public class NewsController {
         return NewsListItemDto.builder()
                 .id(entity.getId())
                 .country(entity.getCountry())
+                .lang(entity.getLang())
                 .source(entity.getSource() == null ? "" : entity.getSource().getSid())
                 .url(articleUrl)
                 .category(List.of(entity.getCategory().name()))
@@ -249,6 +306,7 @@ public class NewsController {
                 .evidenceSpans(parseEvidenceSpans(entity.getEvidenceSpans()))
                 .thumbnailUrl(extractFirstImageUrl(entity.getBodyRaw()))
                 .sourceIconUrl(sourceIconUrl)
+                .translationPending(localized.translationPending())
                 .build();
     }
 
@@ -322,14 +380,34 @@ public class NewsController {
         if (html == null || html.isBlank()) {
             return "";
         }
-        Matcher matcher = IMG_SRC_PATTERN.matcher(html);
-        if (matcher.find()) {
-            String url = matcher.group(1);
-            if (url != null && (url.startsWith("http://") || url.startsWith("https://"))) {
-                return url;
-            }
+        String normalized = decodeHtmlEntities(html);
+
+        String imgSrc = findFirstMatch(IMG_SRC_PATTERN, normalized);
+        String resolvedImgSrc = normalizeImageUrlCandidate(imgSrc);
+        if (!resolvedImgSrc.isBlank()) {
+            return resolvedImgSrc;
         }
-        return "";
+
+        String lazySrc = findFirstMatch(IMG_LAZY_SRC_PATTERN, normalized);
+        String resolvedLazySrc = normalizeImageUrlCandidate(lazySrc);
+        if (!resolvedLazySrc.isBlank()) {
+            return resolvedLazySrc;
+        }
+
+        String srcset = findFirstMatch(IMG_SRCSET_PATTERN, normalized);
+        String resolvedSrcset = normalizeSrcsetCandidate(srcset);
+        if (!resolvedSrcset.isBlank()) {
+            return resolvedSrcset;
+        }
+
+        String metaImage = findFirstNonNullGroup(META_IMAGE_PATTERN, normalized);
+        String resolvedMeta = normalizeImageUrlCandidate(metaImage);
+        if (!resolvedMeta.isBlank()) {
+            return resolvedMeta;
+        }
+
+        String plainImage = findFirstMatch(PLAIN_IMAGE_URL_PATTERN, normalized);
+        return normalizeImageUrlCandidate(plainImage);
     }
 
     /** 이미지가 없을 때 도메인 favicon으로 썸네일 대체 */
@@ -349,6 +427,102 @@ public class NewsController {
         } catch (Exception ignored) {
             return "";
         }
+    }
+
+    /**
+     * 수동 번역 직후 목록 캐시를 전체 비운다.
+     * 화면 반영 지연(캐시 TTL)보다 즉시성 요구가 우선인 경로에만 사용한다.
+     */
+    private void evictNewsListCaches() {
+        StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+        if (redisTemplate == null) {
+            return;
+        }
+        try {
+            java.util.Set<String> keys = redisTemplate.keys("news:list:*");
+            if (keys != null && !keys.isEmpty()) {
+                redisTemplate.delete(keys);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private String findFirstMatch(java.util.regex.Pattern pattern, String text) {
+        Matcher matcher = pattern.matcher(text == null ? "" : text);
+        if (!matcher.find()) {
+            return "";
+        }
+        return matcher.group(1) == null ? "" : matcher.group(1);
+    }
+
+    private String findFirstNonNullGroup(java.util.regex.Pattern pattern, String text) {
+        Matcher matcher = pattern.matcher(text == null ? "" : text);
+        if (!matcher.find()) {
+            return "";
+        }
+        for (int i = 1; i <= matcher.groupCount(); i++) {
+            String group = matcher.group(i);
+            if (group != null && !group.isBlank()) {
+                return group;
+            }
+        }
+        return "";
+    }
+
+    private String normalizeSrcsetCandidate(String srcset) {
+        if (srcset == null || srcset.isBlank()) {
+            return "";
+        }
+        String[] candidates = srcset.split(",");
+        for (String candidate : candidates) {
+            String[] tokens = candidate.trim().split("\\s+");
+            if (tokens.length == 0) {
+                continue;
+            }
+            String normalized = normalizeImageUrlCandidate(tokens[0]);
+            if (!normalized.isBlank()) {
+                return normalized;
+            }
+        }
+        return "";
+    }
+
+    private String normalizeImageUrlCandidate(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        String normalized = decodeHtmlEntities(value).trim();
+        if (normalized.startsWith("//")) {
+            normalized = "https:" + normalized;
+        }
+        if (normalized.startsWith("data:")) {
+            return "";
+        }
+        int whitespace = normalized.indexOf(' ');
+        if (whitespace > 0) {
+            normalized = normalized.substring(0, whitespace);
+        }
+        return (normalized.startsWith("http://") || normalized.startsWith("https://")) ? normalized : "";
+    }
+
+    private String decodeHtmlEntities(String input) {
+        if (input == null || input.isBlank()) {
+            return "";
+        }
+        String decoded = input;
+        for (int i = 0; i < 2; i++) {
+            String next = decoded
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&#39;", "'")
+                    .replace("&amp;", "&");
+            if (next.equals(decoded)) {
+                break;
+            }
+            decoded = next;
+        }
+        return decoded;
     }
 
     /** 공통 성공 응답 포맷 래퍼 */

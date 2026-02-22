@@ -11,6 +11,7 @@ window.ui = {
     onChange,
     onOpenDetail,
     onBackToFeed,
+    onManualNewsTranslate,
     onOpenSignalDetail,
     onTabChange,
     onAssistantRefresh,
@@ -44,6 +45,12 @@ window.ui = {
       }
     });
     $(document).on("click", "#detail-back", onBackToFeed);
+    $(document).on("click", ".news-translate-btn", function () {
+      const newsId = $(this).attr("data-news-id");
+      if (newsId) {
+        onManualNewsTranslate(newsId, this);
+      }
+    });
     $(document).on("click", ".signal-open-btn", function () {
       const signalId = $(this).attr("data-signal-id");
       if (signalId) {
@@ -284,6 +291,12 @@ window.ui = {
     const safeThumbFallback = this.escapeAttr(thumb.fallbackUrl);
     const safeSourceIcon = this.escapeAttr(thumb.sourceIconUrl || "");
     const hasSourceIcon = safeSourceIcon.length > 0;
+    const needsManualTranslate = Boolean(item.translation_pending)
+      && String(item.lang || "").toLowerCase() !== "ko";
+    const safeNewsId = this.escapeAttr(item.id || "");
+    const translateButton = needsManualTranslate
+      ? `<button class="badge news-translate-btn" type="button" data-news-id="${safeNewsId}">한글 번역</button>`
+      : "";
 
     return `
       <article class="news-item ${isMain ? "main" : ""}">
@@ -303,6 +316,7 @@ window.ui = {
           <span class="badge">출처 ${source}</span>
           <span class="badge">신뢰도 ${trustText}</span>
           <span class="badge">발행 ${pub}</span>
+          ${translateButton}
           <button class="badge evidence-btn" data-evidence="${evidenceEncoded}">근거스팬</button>
         </div>
       </article>

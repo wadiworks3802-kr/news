@@ -99,6 +99,25 @@ public class NewsLocalizationService {
         return true;
     }
 
+    /**
+     * 사용자가 수동 번역 버튼을 눌렀을 때 즉시 번역을 수행한다.
+     * 처리 중인 동일 뉴스는 중복 실행하지 않고 false를 반환한다.
+     */
+    public boolean translateNow(String newsId) {
+        if (newsId == null || newsId.isBlank()) {
+            return false;
+        }
+        if (!inFlightIds.add(newsId)) {
+            return false;
+        }
+        try {
+            translateAndPersist(newsId);
+            return true;
+        } finally {
+            inFlightIds.remove(newsId);
+        }
+    }
+
     private void translateAndPersist(String newsId) {
         newsRepository.findById(newsId).ifPresent(news -> {
             String rawTitle = defaultIfBlank(news.getTitleRaw(), "(제목 없음)");

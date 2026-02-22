@@ -217,3 +217,6 @@
 - [T210] 관리자 UI 승인 패널 추가: `web/index.html`, `api.js`, `app.js`, `ui.js`, `store.js`에 주문 승인 큐/상세 패널 및 추천등록·승인·반려·모의주문 요청·trace 조회 버튼 연동, 상태/근거/스냅샷/이벤트 로그 표시 추가(기존 뉴스 홈/AI 비서 구조 유지).
 - [T211] 위험 토글 UI 이중확인 추가: 관리자 토글 적용/패치 시 `LIVE_TRADE`, `AUTO_ORDER_FULLY_AUTOMATED` 대상은 2단계 confirm으로 보호하도록 `app.js` 보강.
 - [T212] 테스트 초안 보강/검증 제약 기록(7차): `OrderApprovalPipelineServiceTest` 추가(승인/반려 흐름, 실주문 OFF 상태에서 `PAPER_ONLY` 모의주문 실행 및 감사로그 호출 검증), 로컬 `:api` 컴파일/테스트는 JDK21 Gradle toolchain 부재로 미실행 상태 유지.
+- [T213] 뉴스홈 썸네일 강화(조회단): `NewsController`의 썸네일 추출 로직을 확장하여 `&lt;img&gt;` 인코딩 HTML, lazy-load 속성(`data-src`류), `srcset`, `og:image`/`twitter:image`, 일반 이미지 URL 패턴까지 인식하도록 보강.
+- [T214] 뉴스홈 수동 번역 버튼 추가: `POST /api/news/{id}/translate`(sync/async) API와 `web/api.js`,`web/app.js`,`web/ui.js` 카드 버튼(`한글 번역`)을 연동하고, 수동 번역 직후 뉴스 목록 캐시(`news:list:*`)를 비워 즉시 반영되도록 처리.
+- [T215] 뉴스 수집 썸네일 강화(수집단): `FetchServiceImpl`에서 RSS/Atom `media:thumbnail`, `media:content`, `enclosure(image/*)` URL을 감지해 본문에 대표 이미지 태그를 보강 삽입하도록 개선하여 신규 적재 기사 썸네일 노출률 향상.
