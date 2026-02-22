@@ -97,6 +97,23 @@ function currentAdminApiKey() {
   return raw;
 }
 
+function isRiskyFeatureToggle(featureKey) {
+  const key = String(featureKey || "").trim().toUpperCase();
+  return key === "LIVE_TRADE" || key === "AUTO_ORDER_FULLY_AUTOMATED";
+}
+
+function confirmRiskyToggleChange(featureKey, enabled) {
+  if (!isRiskyFeatureToggle(featureKey)) {
+    return true;
+  }
+  const mode = enabled ? "ON" : "OFF";
+  const first = window.confirm(`[경고] ${featureKey} 토글을 ${mode}으로 변경합니다. 계속 진행할까요?`);
+  if (!first) {
+    return false;
+  }
+  return window.confirm(`[최종확인] ${featureKey} ${mode} 적용을 확정합니다.`);
+}
+
 async function loadStockSignals(seq) {
   const controller = createController();
   try {
@@ -342,6 +359,7 @@ async function loadAdminDiagnostics(options = {}) {
     const alignmentController = createController();
     const confidenceController = createController();
     const toggleController = createController();
+    const orderApprovalController = createController();
 
     const [
       marketSummary,
@@ -355,7 +373,8 @@ async function loadAdminDiagnostics(options = {}) {
       signalAudit,
       signalAlignment,
       signalConfidence,
-      featureToggles
+      featureToggles,
+      orderApprovals
     ] = await Promise.all([
       api.getDiagMarketSummary({
         country: store.state.country,
@@ -401,6 +420,11 @@ async function loadAdminDiagnostics(options = {}) {
       api.getFeatureToggles({
         limit: 40
       }, { signal: toggleController.signal, apiKey }).finally(() => removeController(toggleController))
+      ,
+      api.getOrderApprovals({
+        country: store.state.country,
+        limit: 20
+      }, { signal: orderApprovalController.signal, apiKey }).finally(() => removeController(orderApprovalController))
     ]);
 
     if (seq !== adminRequestSeq) {
@@ -418,10 +442,12 @@ async function loadAdminDiagnostics(options = {}) {
       signalAudit,
       signalAlignment,
       signalConfidence,
-      featureToggles
+      featureToggles,
+      orderApprovals
     };
     store.set({
       adminDiagnostics,
+      adminOrderApprovals: orderApprovals,
       adminError: null
     });
     ui.renderAdminDashboard(adminDiagnostics);
@@ -460,6 +486,187 @@ async function loadAdminTraceDetail() {
     ui.renderAdminError(err);
   } finally {
     removeController(controller);
+  }
+}
+
+async function loadAdminOrderApprovalDetail(workflowId, options = {}) {
+  if (store.state.activeTab !== "admin" && !options.forceWhenHidden) {
+    return;
+  }
+  const apiKey = currentAdminApiKey();
+  if (!apiKey) {
+    ui.renderAdminError({ message: "관리자 API KEY를 입력해 주세요." });
+    return;
+  }
+  const controller = createController();
+  try {
+    const result = await api.getOrderApprovalDetail(workflowId, { signal: controller.signal, apiKey });
+    store.set({ adminOrderApprovalDetail: result });
+    const traceId = result?.data?.workflow?.trace_id || "";
+    if (traceId) {
+      await loadAdminOrderApprovalTrace(traceId, { forceWhenHidden: true, silent: true });
+    }
+    ui.renderAdminOrderApprovalPanel(store.state.adminOrderApprovals, store.state.adminOrderApprovalDetail, store.state.adminOrderApprovalTrace);
+  } catch (err) {
+    if (isAbortError(err)) {
+      return;
+    }
+    ui.renderAdminError(err);
+  } finally {
+    removeController(controller);
+  }
+}
+
+async function loadAdminOrderApprovalTrace(traceId, options = {}) {
+  if (store.state.activeTab !== "admin" && !options.forceWhenHidden) {
+    return;
+  }
+  const apiKey = currentAdminApiKey();
+  if (!apiKey) {
+    return;
+  }
+  const trace = (traceId || "").trim();
+  if (!trace) {
+    return;
+  }
+  const controller = createController();
+  try {
+    const result = await api.getOrderApprovalTrace(trace, { signal: controller.signal, apiKey, limit: 80 });
+    store.set({ adminOrderApprovalTrace: result });
+    if (!options.silent) {
+      ui.renderAdminOrderApprovalPanel(store.state.adminOrderApprovals, store.state.adminOrderApprovalDetail, store.state.adminOrderApprovalTrace);
+    }
+  } catch (err) {
+    if (!isAbortError(err)) {
+      ui.renderAdminError(err);
+    }
+  } finally {
+    removeController(controller);
+  }
+}
+
+async function createOrderApprovalRecommendation() {
+  if (store.state.activeTab !== "admin") {
+    return;
+  }
+  const apiKey = currentAdminApiKey();
+  if (!apiKey) {
+    ui.renderAdminError({ message: "관리자 API KEY를 입력해 주세요." });
+    return;
+  }
+  const signalId = ($("#order-approval-signal-id").val() || "").trim();
+  const orderSide = ($("#order-approval-order-side").val() || "").trim();
+  const requestReason = ($("#order-approval-request-reason").val() || "").trim();
+  if (!signalId) {
+    ui.renderAdminError({ message: "signal_id를 입력해 주세요." });
+    return;
+  }
+  try {
+    const result = await api.createOrderApprovalRecommendation({
+      signal_id: signalId,
+      order_side: orderSide || null,
+      request_reason: requestReason || null,
+      requested_by: "admin-ui",
+      allow_duplicate: false
+    }, { apiKey });
+    store.set({ adminOrderApprovalDetail: result });
+    const trace = result?.data?.workflow?.trace_id || "";
+    if (trace) {
+      await loadAdminOrderApprovalTrace(trace, { forceWhenHidden: true, silent: true });
+    }
+    await loadAdminDiagnostics({ forceWhenHidden: true, backgroundRefresh: true });
+    ui.renderAdminOrderApprovalPanel(store.state.adminOrderApprovals, store.state.adminOrderApprovalDetail, store.state.adminOrderApprovalTrace);
+  } catch (err) {
+    ui.renderAdminError(err);
+  }
+}
+
+async function refreshOrderApprovalQueue() {
+  await loadAdminDiagnostics({ forceWhenHidden: true, backgroundRefresh: true });
+  ui.renderAdminOrderApprovalPanel(store.state.adminOrderApprovals, store.state.adminOrderApprovalDetail, store.state.adminOrderApprovalTrace);
+}
+
+async function approveOrderApprovalWorkflow(workflowId) {
+  const apiKey = currentAdminApiKey();
+  if (!apiKey) {
+    ui.renderAdminError({ message: "관리자 API KEY를 입력해 주세요." });
+    return;
+  }
+  const approvalReason = window.prompt("승인 사유를 입력하세요.", "관리자 승인") || "";
+  if (!approvalReason.trim()) {
+    return;
+  }
+  const autoRequestPaperOrder = window.confirm("승인 후 즉시 모의주문 요청도 실행할까요? (AUTO_ORDER_WITH_ADMIN_APPROVAL 토글 ON인 경우에만 동작)");
+  try {
+    const result = await api.approveOrderApproval(workflowId, {
+      approved_by: "admin-ui",
+      approval_reason: approvalReason.trim(),
+      auto_request_paper_order: autoRequestPaperOrder
+    }, { apiKey });
+    store.set({ adminOrderApprovalDetail: result });
+    const trace = result?.data?.workflow?.trace_id || "";
+    if (trace) {
+      await loadAdminOrderApprovalTrace(trace, { forceWhenHidden: true, silent: true });
+    }
+    await loadAdminDiagnostics({ forceWhenHidden: true, backgroundRefresh: true });
+    ui.renderAdminOrderApprovalPanel(store.state.adminOrderApprovals, store.state.adminOrderApprovalDetail, store.state.adminOrderApprovalTrace);
+  } catch (err) {
+    ui.renderAdminError(err);
+  }
+}
+
+async function rejectOrderApprovalWorkflow(workflowId) {
+  const apiKey = currentAdminApiKey();
+  if (!apiKey) {
+    ui.renderAdminError({ message: "관리자 API KEY를 입력해 주세요." });
+    return;
+  }
+  const rejectReason = window.prompt("반려 사유를 입력하세요.", "리스크/근거 확인 후 반려") || "";
+  if (!rejectReason.trim()) {
+    return;
+  }
+  try {
+    const result = await api.rejectOrderApproval(workflowId, {
+      rejected_by: "admin-ui",
+      reject_reason: rejectReason.trim()
+    }, { apiKey });
+    store.set({ adminOrderApprovalDetail: result });
+    const trace = result?.data?.workflow?.trace_id || "";
+    if (trace) {
+      await loadAdminOrderApprovalTrace(trace, { forceWhenHidden: true, silent: true });
+    }
+    await loadAdminDiagnostics({ forceWhenHidden: true, backgroundRefresh: true });
+    ui.renderAdminOrderApprovalPanel(store.state.adminOrderApprovals, store.state.adminOrderApprovalDetail, store.state.adminOrderApprovalTrace);
+  } catch (err) {
+    ui.renderAdminError(err);
+  }
+}
+
+async function requestOrderApprovalPaperOrder(workflowId) {
+  const apiKey = currentAdminApiKey();
+  if (!apiKey) {
+    ui.renderAdminError({ message: "관리자 API KEY를 입력해 주세요." });
+    return;
+  }
+  const requestReason = window.prompt("모의주문 요청 사유를 입력하세요.", "승인된 추천에 대한 paper order 요청") || "";
+  if (!requestReason.trim()) {
+    return;
+  }
+  try {
+    const result = await api.requestOrderApprovalPaperOrder(workflowId, {
+      requested_by: "admin-ui",
+      request_reason: requestReason.trim(),
+      force_paper: true
+    }, { apiKey });
+    store.set({ adminOrderApprovalDetail: result });
+    const trace = result?.data?.workflow?.trace_id || "";
+    if (trace) {
+      await loadAdminOrderApprovalTrace(trace, { forceWhenHidden: true, silent: true });
+    }
+    await loadAdminDiagnostics({ forceWhenHidden: true, backgroundRefresh: true });
+    ui.renderAdminOrderApprovalPanel(store.state.adminOrderApprovals, store.state.adminOrderApprovalDetail, store.state.adminOrderApprovalTrace);
+  } catch (err) {
+    ui.renderAdminError(err);
   }
 }
 
@@ -643,6 +850,9 @@ async function upsertFeatureToggle() {
     ui.renderAdminError({ message: "feature_key를 입력해 주세요." });
     return;
   }
+  if (!confirmRiskyToggleChange(featureKey, enabled)) {
+    return;
+  }
   try {
     await api.upsertFeatureToggle({
       feature_key: featureKey,
@@ -665,6 +875,14 @@ async function patchFeatureToggle(id, nextEnabled) {
   const apiKey = currentAdminApiKey();
   if (!apiKey) {
     ui.renderAdminError({ message: "관리자 API KEY를 입력해 주세요." });
+    return;
+  }
+  const currentToggles = Array.isArray(store.state.adminDiagnostics?.featureToggles?.data)
+    ? store.state.adminDiagnostics.featureToggles.data
+    : [];
+  const target = currentToggles.find((row) => String(row.id) === String(id));
+  const featureKey = String(target?.feature_key || "").toUpperCase();
+  if (!confirmRiskyToggleChange(featureKey, nextEnabled)) {
     return;
   }
   try {
@@ -774,7 +992,14 @@ $(function () {
     () => loadAdminDiagnostics({ forceWhenHidden: true }),
     loadAdminTraceDetail,
     upsertFeatureToggle,
-    patchFeatureToggle
+    patchFeatureToggle,
+    refreshOrderApprovalQueue,
+    createOrderApprovalRecommendation,
+    loadAdminOrderApprovalDetail,
+    approveOrderApprovalWorkflow,
+    rejectOrderApprovalWorkflow,
+    requestOrderApprovalPaperOrder,
+    loadAdminOrderApprovalTrace
   );
 
   window.addEventListener("hashchange", () => {

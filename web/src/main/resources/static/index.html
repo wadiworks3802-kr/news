@@ -225,6 +225,23 @@
           <div id="admin-toggles"></div>
         </article>
         <article class="admin-card">
+          <h3>주문 승인 파이프라인 (준비단계)</h3>
+          <div class="toggle-form">
+            <input id="order-approval-signal-id" type="text" placeholder="signal_id" aria-label="signal_id" />
+            <select id="order-approval-order-side" aria-label="order_side">
+              <option value="">자동판단</option>
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+            </select>
+            <input id="order-approval-request-reason" type="text" placeholder="추천 생성 사유" aria-label="추천 생성 사유" />
+            <button id="order-approval-create" type="button">추천등록</button>
+            <button id="order-approval-refresh" type="button">큐 새로고침</button>
+          </div>
+          <div id="admin-order-approvals"></div>
+          <hr />
+          <div id="admin-order-approval-detail"></div>
+        </article>
+        <article class="admin-card">
           <h3>trace_id 상세</h3>
           <div id="admin-trace-detail"></div>
         </article>

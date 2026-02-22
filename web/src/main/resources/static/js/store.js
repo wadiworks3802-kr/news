@@ -49,6 +49,7 @@ window.store = {
     POSITION_ENGINE: "차트 대응 전략 엔진 활성화",
     DISCOVERY_ENGINE: "발굴 전략 엔진 활성화",
     RAG_ASSISTANT: "RAG/경량모델 보조설명 계층 활성화",
+    AUTO_ORDER_WITH_ADMIN_APPROVAL: "관리자 승인 후 모의주문 자동 요청 허용 (실주문 아님)",
     LIVE_TRADE: "실주문 관련 기능 사용 가능 여부 (기본 OFF)",
     AUTO_ORDER_FULLY_AUTOMATED: "완전자동 주문 파이프라인 사용 여부 (고위험)"
   },
@@ -87,6 +88,9 @@ window.store = {
     adminApiKey: "",
     adminDiagnostics: null,
     adminTraceDetail: null,
+    adminOrderApprovals: null,
+    adminOrderApprovalDetail: null,
+    adminOrderApprovalTrace: null,
     adminError: null,
     assistantDashboard: null,
     assistantTraceId: "",

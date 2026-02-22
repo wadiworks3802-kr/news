@@ -209,3 +209,11 @@
 - [T202] 관리자 진단 UI 고도화: `web/ui.js`, `web/style.css`에서 RAG 성공률/지연/fallback 카드, `trace_id` 상세 섹션형 뷰(수집/Provider, 전략 실행, RAG 감사 로그), 킬스위치 설명/범위/변경자/사유/시각/위험토글 경고 렌더링 추가.
 - [T203] 정적 점검 수행: `git diff --check` 실행하여 patch/공백 이슈 없음 확인(개행 CRLF 경고만 존재), 런타임 문법 점검은 로컬 `node` 미설치로 미실행 상태 기록.
 - [T204] 로컬 빌드/테스트 제약 재확인(6차): `:api/:web` 컴파일 및 테스트 회귀는 Windows 로컬 JDK21 Gradle toolchain 부재로 미실행(현재 JDK25만 설치) 상태 유지, 서버/CI 또는 JDK21 환경에서 후속 검증 필요.
+- [T205] PROMPT-8-REBUILD 7차 착수: 자동매매 준비단계 범위(주문 승인 상태머신/감사·재현성/관리자 승인 UI/API/모의주문 연계/킬스위치 보호) 요구사항 분석 및 기존 paper trade·AI 비서·관리자 진단 구조 재사용 지점 확정.
+- [T206] DB/도메인/리포지토리 추가: `V12__order_approval_pipeline.sql` 생성(`order_approval_workflow`, `order_approval_event_log` + TABLE/COLUMN/INDEX COMMENT), `OrderApprovalWorkflowEntity`, `OrderApprovalEventLogEntity`, 단계/이벤트 enum 및 JPA 리포지토리 신규 구현(한글 주석 포함).
+- [T207] 주문 승인 파이프라인 서비스 구현: `OrderApprovalPipelineService` 추가(상태머신 `ANALYZE→RECOMMEND→APPROVE→ORDER_REQUESTED→ORDER_EXECUTED`, 스냅샷 저장, 이벤트 감사 로그, trace 재현용 상세/trace 요약 조회, 실주문 기본 OFF + paper trade 경로 유지).
+- [T208] 관리자 승인 API 추가: `AdminOrderApprovalController`에 추천 생성/목록/상세/승인/반려/모의주문 요청/trace 요약 엔드포인트(`ApiEnvelope {data,meta,trace_id}`) 구현.
+- [T209] 킬스위치 보호 강화: `SystemFeatureToggleService` 기본값 정책에 `AUTO_ORDER_WITH_ADMIN_APPROVAL`, `LIVE_TRADE`, `AUTO_ORDER_FULLY_AUTOMATED`를 기본 OFF로 처리하여 토글 미등록 상태에서도 위험 기능 비활성 유지.
+- [T210] 관리자 UI 승인 패널 추가: `web/index.html`, `api.js`, `app.js`, `ui.js`, `store.js`에 주문 승인 큐/상세 패널 및 추천등록·승인·반려·모의주문 요청·trace 조회 버튼 연동, 상태/근거/스냅샷/이벤트 로그 표시 추가(기존 뉴스 홈/AI 비서 구조 유지).
+- [T211] 위험 토글 UI 이중확인 추가: 관리자 토글 적용/패치 시 `LIVE_TRADE`, `AUTO_ORDER_FULLY_AUTOMATED` 대상은 2단계 confirm으로 보호하도록 `app.js` 보강.
+- [T212] 테스트 초안 보강/검증 제약 기록(7차): `OrderApprovalPipelineServiceTest` 추가(승인/반려 흐름, 실주문 OFF 상태에서 `PAPER_ONLY` 모의주문 실행 및 감사로그 호출 검증), 로컬 `:api` 컴파일/테스트는 JDK21 Gradle toolchain 부재로 미실행 상태 유지.

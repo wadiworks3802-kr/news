@@ -19,7 +19,14 @@ window.ui = {
     onAdminRefresh,
     onAdminTraceLoad,
     onToggleUpsert,
-    onTogglePatch
+    onTogglePatch,
+    onOrderApprovalRefresh,
+    onOrderApprovalCreate,
+    onOrderApprovalDetailLoad,
+    onOrderApprovalApprove,
+    onOrderApprovalReject,
+    onOrderApprovalOrderRequest,
+    onOrderApprovalTraceLoad
   ) {
     // 변경 이벤트를 하나의 로더 함수로 연결
     ["#country", "#category", "#sort", "#period", "#viewLang"].forEach((selector) => {
@@ -74,11 +81,43 @@ window.ui = {
     $("#admin-refresh").on("click", onAdminRefresh);
     $("#admin-trace-load").on("click", onAdminTraceLoad);
     $("#toggle-upsert").on("click", onToggleUpsert);
+    $("#order-approval-refresh").on("click", onOrderApprovalRefresh);
+    $("#order-approval-create").on("click", onOrderApprovalCreate);
     $(document).on("click", ".toggle-patch-btn", function () {
       const id = $(this).attr("data-id");
       const enabled = $(this).attr("data-enabled");
       if (id) {
         onTogglePatch(id, enabled === "true");
+      }
+    });
+    $(document).on("click", ".order-approval-detail-btn", function () {
+      const workflowId = $(this).attr("data-workflow-id");
+      if (workflowId) {
+        onOrderApprovalDetailLoad(workflowId);
+      }
+    });
+    $(document).on("click", ".order-approval-approve-btn", function () {
+      const workflowId = $(this).attr("data-workflow-id");
+      if (workflowId) {
+        onOrderApprovalApprove(workflowId);
+      }
+    });
+    $(document).on("click", ".order-approval-reject-btn", function () {
+      const workflowId = $(this).attr("data-workflow-id");
+      if (workflowId) {
+        onOrderApprovalReject(workflowId);
+      }
+    });
+    $(document).on("click", ".order-approval-order-btn", function () {
+      const workflowId = $(this).attr("data-workflow-id");
+      if (workflowId) {
+        onOrderApprovalOrderRequest(workflowId);
+      }
+    });
+    $(document).on("click", ".order-approval-trace-btn", function () {
+      const traceId = ($(this).attr("data-trace-id") || "").trim();
+      if (traceId) {
+        onOrderApprovalTraceLoad(traceId);
       }
     });
   },
@@ -980,7 +1019,9 @@ window.ui = {
       "#admin-universe",
       "#admin-mapping",
       "#admin-signals",
-      "#admin-toggles"
+      "#admin-toggles",
+      "#admin-order-approvals",
+      "#admin-order-approval-detail"
     ].forEach((selector) => $(selector).html(loading));
   },
 
@@ -1112,6 +1153,80 @@ window.ui = {
         `;
       }).join("")
       : '<div class="empty-box">등록된 기능 토글이 없습니다.</div>');
+
+    this.renderAdminOrderApprovalPanel(store.state.adminOrderApprovals, store.state.adminOrderApprovalDetail, store.state.adminOrderApprovalTrace);
+  },
+
+  renderAdminOrderApprovalPanel(queueEnvelope, detailEnvelope, traceEnvelope) {
+    const queue = queueEnvelope?.data || {};
+    const items = Array.isArray(queue.items) ? queue.items : [];
+    const listHtml = items.length
+      ? items.slice(0, 20).map((row) => {
+        const stage = String(row.current_stage || "");
+        const traceId = String(row.trace_id || "");
+        const canApprove = stage === "RECOMMEND" || stage === "APPROVE";
+        const canReject = stage !== "REJECTED" && stage !== "ORDER_EXECUTED";
+        const canOrder = stage === "APPROVE" || stage === "ORDER_FAILED";
+        return `
+          <div class="admin-toggle-item">
+            <div class="admin-toggle-head">
+              <span class="admin-toggle-key">${this.escapeHtml(row.asset_name || row.asset_code || "-")}</span>
+              <span class="admin-toggle-state ${stage === "ORDER_EXECUTED" ? "on" : "off"}">${this.escapeHtml(stage || "-")}</span>
+            </div>
+            <div class="admin-toggle-meta">workflow #${row.id} · ${this.escapeHtml(row.order_side || "-")} · 시그널 ${this.escapeHtml(row.signal_id || "-")}</div>
+            <div class="admin-toggle-meta">사유 ${this.escapeHtml(row.recommendation_reason || "-")}</div>
+            <div class="admin-toggle-meta">trace ${this.escapeHtml(traceId || "-")}</div>
+            <div class="admin-row" style="gap:6px;flex-wrap:wrap;">
+              <button type="button" class="order-approval-detail-btn" data-workflow-id="${row.id}">상세</button>
+              ${canApprove ? `<button type="button" class="order-approval-approve-btn" data-workflow-id="${row.id}">승인</button>` : ""}
+              ${canReject ? `<button type="button" class="order-approval-reject-btn" data-workflow-id="${row.id}">반려</button>` : ""}
+              ${canOrder ? `<button type="button" class="order-approval-order-btn" data-workflow-id="${row.id}">모의주문 요청</button>` : ""}
+              ${traceId ? `<button type="button" class="order-approval-trace-btn" data-trace-id="${this.escapeAttr(traceId)}">trace 조회</button>` : ""}
+            </div>
+          </div>
+        `;
+      }).join("")
+      : '<div class="empty-box">추천/승인 큐가 비어 있습니다.</div>';
+
+    $("#admin-order-approvals").html(`
+      <div class="admin-kv">큐 건수 ${Number(queue.count || 0)}건 / stage_counts ${this.escapeHtml(JSON.stringify(queue.stage_counts || {}))}</div>
+      ${listHtml}
+    `);
+
+    if (!detailEnvelope?.data) {
+      $("#admin-order-approval-detail").html('<div class="empty-box">워크플로 상세를 선택하면 근거/스냅샷/이벤트를 표시합니다.</div>');
+      return;
+    }
+
+    const detail = detailEnvelope.data || {};
+    const workflow = detail.workflow || {};
+    const snapshots = detail.snapshots || {};
+    const events = Array.isArray(detail.events) ? detail.events.slice(0, 15) : [];
+    const paperOrder = detail.paper_order || {};
+    const refs = Array.isArray(snapshots.news_context_refs) ? snapshots.news_context_refs : [];
+    const traceSummary = traceEnvelope?.data || {};
+
+    $("#admin-order-approval-detail").html(`
+      <div class="admin-kv">선택 workflow #${Number(workflow.id || 0)} · ${this.escapeHtml(workflow.current_stage || "-")} · ${this.escapeHtml(workflow.asset_name || workflow.asset_code || "-")}</div>
+      <div class="admin-kv">추천액션 ${this.escapeHtml(workflow.recommended_action || "-")} / 주문방향 ${this.escapeHtml(workflow.order_side || "-")} / 신뢰도 ${this.num(workflow.recommendation_confidence, 4)}</div>
+      <div class="admin-kv">승인자 ${this.escapeHtml(workflow.approved_by || "-")} · 반려자 ${this.escapeHtml(workflow.rejected_by || "-")} · trace ${this.escapeHtml(workflow.trace_id || "-")}</div>
+      <div class="admin-kv">실행모드 ${this.escapeHtml(workflow.order_execution_mode || "-")} · 실주문요청 ${Boolean(workflow.live_trade_requested)} · 차단사유 ${this.escapeHtml(workflow.live_trade_blocked_reason || "-")}</div>
+      <div class="admin-kv">스냅샷 signal/quote/risk/assistant/newsRefs = ${Object.keys(snapshots.signal || {}).length}/${Object.keys(snapshots.quote || {}).length}/${Object.keys(snapshots.risk || {}).length}/${Object.keys(snapshots.assistant || {}).length}/${refs.length}</div>
+      <div class="admin-kv">paper_order ${paperOrder.id ? `#${paperOrder.id} ${this.escapeHtml(paperOrder.status || "-")} ${this.escapeHtml(paperOrder.blocked_reason || "")}` : "없음"}</div>
+      <div class="admin-kv">trace_summary workflows=${Number(traceSummary.workflow_count || 0)} / events=${Number(traceSummary.event_count || 0)}</div>
+      <div class="admin-trace-sections">
+        <section>
+          <h4>주문 승인 이벤트 로그</h4>
+          ${events.length ? events.map((row) => `<div class="admin-row"><span>${this.escapeHtml(row.event_type || "-")} ${this.escapeHtml(row.from_stage || "-")}→${this.escapeHtml(row.to_stage || "-")}</span><span>${row.success ? "OK" : "FAIL"}</span><span>${this.escapeHtml(row.created_at || "-")}</span></div>`).join("") : '<div class="empty-box">이벤트 로그 없음</div>'}
+        </section>
+        <section>
+          <h4>근거 스냅샷 요약</h4>
+          <div class="admin-kv">signal: ${this.escapeHtml(JSON.stringify(snapshots.signal || {}))}</div>
+          <div class="admin-kv">quote: ${this.escapeHtml(JSON.stringify(snapshots.quote || {}))}</div>
+          <div class="admin-kv">assistant: ${this.escapeHtml(JSON.stringify(snapshots.assistant || {}))}</div>
+        </section>
+      </div>
+    `);
   },
 
   renderAdminTraceDetail(traceDetail) {

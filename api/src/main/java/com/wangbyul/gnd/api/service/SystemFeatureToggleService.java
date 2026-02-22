@@ -31,6 +31,11 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class SystemFeatureToggleService {
 
+    private static final List<String> DEFAULT_OFF_FEATURE_KEYS = List.of(
+            "LIVE_TRADE",
+            "AUTO_ORDER_FULLY_AUTOMATED",
+            "AUTO_ORDER_WITH_ADMIN_APPROVAL");
+
     private final SystemFeatureToggleRepository systemFeatureToggleRepository;
 
     @Transactional(readOnly = true)
@@ -131,7 +136,10 @@ public class SystemFeatureToggleService {
 
         Optional<SystemFeatureToggleEntity> global = systemFeatureToggleRepository
                 .findByFeatureKeyAndScopeTypeAndScopeValueIsNull(normalizedKey, FeatureScopeType.GLOBAL);
-        return global.map(SystemFeatureToggleEntity::getEnabled).orElse(true);
+        if (global.isPresent()) {
+            return Boolean.TRUE.equals(global.get().getEnabled());
+        }
+        return !DEFAULT_OFF_FEATURE_KEYS.contains(normalizedKey);
     }
 
     @Transactional(readOnly = true)

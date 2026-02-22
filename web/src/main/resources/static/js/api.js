@@ -277,5 +277,57 @@ window.api = {
       signal: options.signal,
       apiKey: options.apiKey || ""
     });
+  },
+  async getOrderApprovals(params, options = {}) {
+    return this.adminFetch("/api/admin/order-approvals", {
+      params,
+      signal: options.signal,
+      apiKey: options.apiKey || ""
+    });
+  },
+  async getOrderApprovalDetail(workflowId, options = {}) {
+    return this.adminFetch(`/api/admin/order-approvals/${encodeURIComponent(workflowId)}`, {
+      signal: options.signal,
+      apiKey: options.apiKey || ""
+    });
+  },
+  async createOrderApprovalRecommendation(payload, options = {}) {
+    return this.adminFetch("/api/admin/order-approvals/recommendations", {
+      method: "POST",
+      body: payload,
+      signal: options.signal,
+      apiKey: options.apiKey || ""
+    });
+  },
+  async approveOrderApproval(workflowId, payload, options = {}) {
+    return this.adminFetch(`/api/admin/order-approvals/${encodeURIComponent(workflowId)}/approve`, {
+      method: "POST",
+      body: payload,
+      signal: options.signal,
+      apiKey: options.apiKey || ""
+    });
+  },
+  async rejectOrderApproval(workflowId, payload, options = {}) {
+    return this.adminFetch(`/api/admin/order-approvals/${encodeURIComponent(workflowId)}/reject`, {
+      method: "POST",
+      body: payload,
+      signal: options.signal,
+      apiKey: options.apiKey || ""
+    });
+  },
+  async requestOrderApprovalPaperOrder(workflowId, payload, options = {}) {
+    return this.adminFetch(`/api/admin/order-approvals/${encodeURIComponent(workflowId)}/order-request`, {
+      method: "POST",
+      body: payload,
+      signal: options.signal,
+      apiKey: options.apiKey || ""
+    });
+  },
+  async getOrderApprovalTrace(traceId, options = {}) {
+    return this.adminFetch("/api/admin/order-approvals/trace", {
+      params: { trace_id: traceId, limit: options.limit || 50 },
+      signal: options.signal,
+      apiKey: options.apiKey || ""
+    });
   }
 };
