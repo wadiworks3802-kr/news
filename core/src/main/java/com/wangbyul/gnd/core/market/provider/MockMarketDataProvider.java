@@ -86,7 +86,7 @@ public class MockMarketDataProvider implements MarketDataProvider {
                     volume,
                     providerId()));
         }
-        OffsetDateTime responseAt = requestAt.plusMillis(Math.max(0, properties.getMockLatencyMs()));
+        OffsetDateTime responseAt = requestAt.plus(Math.max(0, properties.getMockLatencyMs()), ChronoUnit.MILLIS);
         Map<String, Object> meta = Map.of(
                 "mock", true,
                 "requested_assets", items.size(),
@@ -136,7 +136,7 @@ public class MockMarketDataProvider implements MarketDataProvider {
                         providerId()));
             }
         }
-        OffsetDateTime responseAt = requestAt.plusMillis(Math.max(0, properties.getMockLatencyMs()));
+        OffsetDateTime responseAt = requestAt.plus(Math.max(0, properties.getMockLatencyMs()), ChronoUnit.MILLIS);
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("mock", true);
         meta.put("requested_assets", safeAssets(assets).size());
@@ -157,7 +157,7 @@ public class MockMarketDataProvider implements MarketDataProvider {
     public MarketProviderFetchResult<MarketProviderHealthDto> healthCheck() {
         OffsetDateTime requestAt = OffsetDateTime.now();
         long latency = Math.max(1, properties.getMockLatencyMs());
-        OffsetDateTime responseAt = requestAt.plusMillis(latency);
+        OffsetDateTime responseAt = requestAt.plus(latency, ChronoUnit.MILLIS);
         MarketProviderHealthDto health = new MarketProviderHealthDto(
                 providerId(),
                 MarketProviderHealthStatus.HEALTHY,
