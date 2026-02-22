@@ -24,6 +24,13 @@ public class MarketProviderProperties {
     private boolean fallbackToMockOnFailure = true;
 
     /**
+     * 운영 환경에서 mock provider 사용 허용 여부.
+     *
+     * false 인 경우에도 현재 차수에서는 "강제 차단"보다는 진단/경고 목적으로 우선 사용한다.
+     */
+    private boolean allowMock = false;
+
+    /**
      * Mock Provider 기본 바 생성 개수(자산당).
      */
     private int mockBarsPerAsset = 3;
@@ -47,6 +54,14 @@ public class MarketProviderProperties {
 
     public void setFallbackToMockOnFailure(boolean fallbackToMockOnFailure) {
         this.fallbackToMockOnFailure = fallbackToMockOnFailure;
+    }
+
+    public boolean isAllowMock() {
+        return allowMock;
+    }
+
+    public void setAllowMock(boolean allowMock) {
+        this.allowMock = allowMock;
     }
 
     public int getMockBarsPerAsset() {

@@ -220,3 +220,10 @@
 - [T213] 뉴스홈 썸네일 강화(조회단): `NewsController`의 썸네일 추출 로직을 확장하여 `&lt;img&gt;` 인코딩 HTML, lazy-load 속성(`data-src`류), `srcset`, `og:image`/`twitter:image`, 일반 이미지 URL 패턴까지 인식하도록 보강.
 - [T214] 뉴스홈 수동 번역 버튼 추가: `POST /api/news/{id}/translate`(sync/async) API와 `web/api.js`,`web/app.js`,`web/ui.js` 카드 버튼(`한글 번역`)을 연동하고, 수동 번역 직후 뉴스 목록 캐시(`news:list:*`)를 비워 즉시 반영되도록 처리.
 - [T215] 뉴스 수집 썸네일 강화(수집단): `FetchServiceImpl`에서 RSS/Atom `media:thumbnail`, `media:content`, `enclosure(image/*)` URL을 감지해 본문에 대표 이미지 태그를 보강 삽입하도록 개선하여 신규 적재 기사 썸네일 노출률 향상.
+- [T216] 운영 진단 1차 착수: "화면 노출=정상" 오판 방지를 목표로 시장데이터 수집/Provider/토글/경고·오류/trace 경로를 한 번에 확인할 수 있는 진단 범위와 메타 표준화 적용 범위를 확정.
+- [T217] 시장데이터 Provider 설정 보강: `MarketProviderProperties`에 `allowMock` 설정(`app.market.provider.allow-mock`)을 추가하고 `MarketDataProviderRouter` 접근자(`allowMock()`)를 제공해 운영 기본값(`false`) 진단 노출 기반 확보.
+- [T218] 진단 API 고도화: `AdminDiagnosticsService.getMarketCollectionSummary()`에 `provider_name`, `is_delayed`, `warnings`, Provider 분포/최근 수집 이벤트/토글 상태/trace 전파 요약/감사테이블 현황/TODO/배포 검증 체크리스트를 추가하고 `AdminDiagnosticsController`에서 `meta.trace_id/provider_name/is_delayed/warnings` 표준 필드 주입.
+- [T219] 전략/상세 API 메타 표준화(가능 범위): `InsightController`의 전략패널/시그널상세/AI비서 대시보드 응답 `meta`에 `trace_id`, `provider_name`, `provider_names`, `is_delayed`, `warnings`, `mock_provider_warning`를 포함하도록 시세 스냅샷 기반 컨텍스트 메타 확장.
+- [T220] 운영/로컬 설정 초안 추가: `api/batch application*.yml`에 `app.market.provider.allow-mock`(운영 `false`, 로컬 `true`) 및 `app.trade.live-enabled=false` 기본값을 명시해 운영 기준 설정 초안을 문서화.
+- [T221] 배포 검증 재현 문서 추가: `docs/DeploymentVerificationChecklist.md` 신규 작성(헬스체크/진단 API/Mock 경고/trace_id/감사테이블/토글 검증 절차 및 후속 TODO 명시).
+- [T222] 정적 검증 완료(1차): `MarketProviderJobRepository` 누락 조회 메서드 추가 후 `./gradlew.bat :core:compileJava :api:compileJava :batch:compileJava -x test` 빌드 성공으로 이번 차수 변경분 컴파일 정합성 확인.

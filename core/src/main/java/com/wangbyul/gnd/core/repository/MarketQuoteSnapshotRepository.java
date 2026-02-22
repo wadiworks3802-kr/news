@@ -23,4 +23,10 @@ public interface MarketQuoteSnapshotRepository extends JpaRepository<MarketQuote
     long countByCreatedAtAfter(OffsetDateTime since);
 
     long countByProviderNameAndCreatedAtAfter(String providerName, OffsetDateTime since);
+
+    List<MarketQuoteSnapshotEntity> findTop500ByCreatedAtAfterOrderByCreatedAtDesc(OffsetDateTime since);
+
+    List<MarketQuoteSnapshotEntity> findTop500ByProviderNameAndCreatedAtAfterOrderByCreatedAtDesc(
+            String providerName,
+            OffsetDateTime since);
 }

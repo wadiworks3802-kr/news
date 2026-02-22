@@ -18,6 +18,10 @@ public interface MarketProviderJobRepository extends JpaRepository<MarketProvide
 
     List<MarketProviderJobEntity> findTop100ByScheduledAtAfterOrderByScheduledAtDesc(OffsetDateTime since);
 
+    List<MarketProviderJobEntity> findTop100ByProviderNameAndScheduledAtAfterOrderByScheduledAtDesc(
+            String providerName,
+            OffsetDateTime since);
+
     List<MarketProviderJobEntity> findTop300ByScheduledAtAfterOrderByScheduledAtDesc(OffsetDateTime since);
 
     List<MarketProviderJobEntity> findTop300ByProviderNameAndScheduledAtAfterOrderByScheduledAtDesc(

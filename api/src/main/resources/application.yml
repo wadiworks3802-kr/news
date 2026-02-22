@@ -38,6 +38,7 @@ app:
   market:
     provider:
       active: mock
+      allow-mock: false
       fallback-to-mock-on-failure: true
       mock-bars-per-asset: 3
       mock-latency-ms: 25
@@ -97,6 +98,8 @@ app:
   security:
     admin-api-key: change-me
     cors-allowlist: http://localhost:8080
+  trade:
+    live-enabled: false
   news:
     max-retention-days: 7
   universe:

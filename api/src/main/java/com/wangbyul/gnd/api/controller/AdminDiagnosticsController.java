@@ -5,6 +5,8 @@ import com.wangbyul.gnd.core.domain.AuditSeverityType;
 import com.wangbyul.gnd.core.domain.SignalAuditEngineType;
 import com.wangbyul.gnd.core.dto.ApiEnvelope;
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import org.slf4j.MDC;
@@ -279,11 +281,42 @@ public class AdminDiagnosticsController {
     }
 
     private <T> ApiEnvelope<T> envelope(T data, Map<String, Object> meta) {
+        String traceId = traceId();
         return ApiEnvelope.<T>builder()
                 .data(data)
-                .meta(meta)
-                .traceId(traceId())
+                .meta(standardizeMeta(data, meta, traceId))
+                .traceId(traceId)
                 .build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> Map<String, Object> standardizeMeta(T data, Map<String, Object> meta, String traceId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (meta != null) {
+            result.putAll(meta);
+        }
+        result.put("trace_id", traceId);
+        result.putIfAbsent("provider_name", "");
+        result.putIfAbsent("is_delayed", false);
+        Object warnings = result.get("warnings");
+        if (!(warnings instanceof java.util.List<?>)) {
+            result.put("warnings", new ArrayList<>());
+        }
+        if (data instanceof Map<?, ?> map) {
+            Object providerName = map.get("provider_name");
+            if (providerName != null) {
+                result.put("provider_name", providerName);
+            }
+            Object delayed = map.get("is_delayed");
+            if (delayed instanceof Boolean) {
+                result.put("is_delayed", delayed);
+            }
+            Object dataWarnings = map.get("warnings");
+            if (dataWarnings instanceof java.util.List<?>) {
+                result.put("warnings", dataWarnings);
+            }
+        }
+        return result;
     }
 
     private String traceId() {

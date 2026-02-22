@@ -4,16 +4,19 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wangbyul.gnd.api.dto.FeatureToggleDto;
 import com.wangbyul.gnd.api.service.assistant.AssistantRagService;
+import com.wangbyul.gnd.core.config.MarketProviderProperties;
 import com.wangbyul.gnd.core.domain.ApiResponseAuditEntity;
 import com.wangbyul.gnd.core.domain.AssistantRagAuditLogEntity;
 import com.wangbyul.gnd.core.domain.AssetUniverseEntity;
 import com.wangbyul.gnd.core.domain.AuditSeverityType;
 import com.wangbyul.gnd.core.domain.MarketDataGapEventEntity;
 import com.wangbyul.gnd.core.domain.MarketDataQualitySnapshotEntity;
+import com.wangbyul.gnd.core.domain.MarketQuoteSnapshotEntity;
 import com.wangbyul.gnd.core.domain.SignalAuditEngineType;
 import com.wangbyul.gnd.core.domain.SignalAuditLogEntity;
 import com.wangbyul.gnd.core.domain.StrategyRunEntity;
 import com.wangbyul.gnd.core.domain.TradingSignalEntity;
+import com.wangbyul.gnd.core.market.provider.MarketDataProviderRouter;
 import com.wangbyul.gnd.core.repository.ApiResponseAuditRepository;
 import com.wangbyul.gnd.core.repository.AssistantRagAuditLogRepository;
 import com.wangbyul.gnd.core.repository.AssetUniverseRepository;
@@ -33,14 +36,19 @@ import java.math.RoundingMode;
 import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -76,6 +84,8 @@ public class AdminDiagnosticsService {
     private final SystemFeatureToggleService systemFeatureToggleService;
     private final AssistantRagService assistantRagService;
     private final AssistantRagAuditLogRepository assistantRagAuditLogRepository;
+    private final MarketDataProviderRouter marketDataProviderRouter;
+    private final MarketProviderProperties marketProviderProperties;
     private final ObjectMapper objectMapper;
 
     @Value("${app.market.quality.minimum-quality-score:70}")
@@ -83,6 +93,15 @@ public class AdminDiagnosticsService {
 
     @Value("${app.signal.minimum-combined-confidence:0.45}")
     private BigDecimal minimumCombinedConfidence;
+
+    @Value("${app.universe.quote-freshness-threshold-minutes:180}")
+    private long quoteFreshnessThresholdMinutes;
+
+    @Value("${app.market.collection.provider-latency-warning-ms:2000}")
+    private long providerLatencyWarningMs;
+
+    @Value("${app.trade.live-enabled:false}")
+    private boolean liveTradeEnabled;
 
     public Map<String, Object> getMarketCollectionSummary(String country, String provider, int hours) {
         OffsetDateTime since = OffsetDateTime.now().minusHours(Math.max(1, Math.min(hours, 72)));
@@ -105,11 +124,54 @@ public class AdminDiagnosticsService {
         long barCount = isBlank(provider)
                 ? marketPriceBarRepository.countByCreatedAtAfter(since)
                 : marketPriceBarRepository.countByProviderNameAndCreatedAtAfter(providerKey, since);
+        List<MarketQuoteSnapshotEntity> recentQuotes = (isBlank(provider)
+                ? marketQuoteSnapshotRepository.findTop500ByCreatedAtAfterOrderByCreatedAtDesc(since)
+                : marketQuoteSnapshotRepository.findTop500ByProviderNameAndCreatedAtAfterOrderByCreatedAtDesc(providerKey, since))
+                .stream()
+                .filter(row -> isBlank(provider) || eqIgnoreCase(row.getProviderName(), provider))
+                .toList();
+
+        Map<String, Long> providerNameDistribution = providerDistributionFromQuotes(recentQuotes);
+        Map<String, Long> providerJobDistribution = providerJobs.stream()
+                .collect(Collectors.groupingBy(
+                        job -> upper(blankAs(job.getProviderName(), "UNKNOWN")),
+                        LinkedHashMap::new,
+                        Collectors.counting()));
+        String providerName = summarizeProviderName(providerNameDistribution);
+        long delayedQuoteCount = recentQuotes.stream().filter(this::isDelayedQuote).count();
+        boolean delayed = delayedQuoteCount > 0
+                || (quoteCount <= 0 && ("toss".equals(providerKey) || "kiwoom".equals(providerKey) || isBlank(provider)));
+        boolean mockDetected = containsIgnoreCase(providerName, "MOCK")
+                || providerNameDistribution.keySet().stream().anyMatch(name -> containsIgnoreCase(name, "MOCK"))
+                || providerJobDistribution.keySet().stream().anyMatch(name -> containsIgnoreCase(name, "MOCK"));
+        List<String> warnings = new ArrayList<>();
+        if (mockDetected) {
+            warnings.add("시장데이터 provider_name=MOCK 입니다. 운영 판단용 실데이터가 아닙니다.");
+        }
+        if (!marketProviderProperties.isAllowMock() && mockDetected) {
+            warnings.add("운영 기본 설정상 allowMock=false 이지만 MOCK 데이터가 감지되었습니다.");
+        }
+        if (delayed) {
+            warnings.add("일부 시장데이터가 지연되었거나 최신 시세가 비어 있습니다.");
+        }
+        if (providerJobs.stream().anyMatch(job -> job.getLatencyMs() != null && job.getLatencyMs() > providerLatencyWarningMs)) {
+            warnings.add("최근 수집 잡 지연(latency) 경고가 존재합니다.");
+        }
+        if (providerJobs.stream().anyMatch(job -> job.getStatus() != null && "FAILED".equals(job.getStatus().name()))) {
+            warnings.add("최근 시장데이터 수집 잡 실패가 존재합니다.");
+        }
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("scope_country", blankAs(country, "ALL"));
         data.put("scope_provider", blankAs(provider, "ALL"));
         data.put("window_hours", Math.max(1, Math.min(hours, 72)));
+        data.put("provider_name", providerName);
+        data.put("is_delayed", delayed);
+        data.put("warnings", warnings);
+        data.put("warning_flags", Map.of(
+                "mock_provider_detected", mockDetected,
+                "delayed_data_detected", delayed,
+                "provider_failure_detected", providerJobs.stream().anyMatch(job -> job.getStatus() != null && "FAILED".equals(job.getStatus().name()))));
         data.put("snapshot_count", rows.size());
         data.put("provider_job_count", providerJobs.size());
         data.put("provider_job_success_count", providerJobs.stream()
@@ -123,6 +185,9 @@ public class AdminDiagnosticsService {
                 .count());
         data.put("quote_snapshot_count", quoteCount);
         data.put("price_bar_count", barCount);
+        data.put("recent_quote_provider_distribution", providerNameDistribution);
+        data.put("recent_provider_job_distribution", providerJobDistribution);
+        data.put("recent_delayed_quote_count", delayedQuoteCount);
         data.put("unresolved_gap_count", marketDataGapEventRepository.countByResolvedFalse());
         data.put("avg_quality_score", avg(rows, MarketDataQualitySnapshotEntity::getQualityScore, 2));
         data.put("avg_missing_rate", avg(rows, MarketDataQualitySnapshotEntity::getMissingRate, 6));
@@ -176,6 +241,16 @@ public class AdminDiagnosticsService {
                             LinkedHashMap::new));
         }
         data.put("provider_health", health);
+        data.put("provider_runtime_config", Map.of(
+                "active_provider", upper(blankAs(marketDataProviderRouter.activeProviderId(), "mock")),
+                "fallback_to_mock_on_failure", marketDataProviderRouter.fallbackToMockOnFailure(),
+                "allow_mock", marketProviderRouterAllowMock()));
+        data.put("feature_toggle_status", featureToggleStatusSummary());
+        data.put("recent_collection_events", recentCollectionEvents(providerJobs));
+        data.put("recent_warning_error_summary", recentWarningErrorSummary(since, provider));
+        data.put("trace_propagation", tracePropagationSummary());
+        data.put("market_collection_audit_status", marketCollectionAuditStatusSummary());
+        data.put("deployment_verification_checklist", deploymentVerificationChecklist(data));
         return data;
     }
 
@@ -643,10 +718,17 @@ public class AdminDiagnosticsService {
     }
 
     public Map<String, Object> diagnosticMeta(String sourceWindow, int warningCount) {
-        return Map.of(
+        List<String> warnings = warningCount > 0
+                ? List.of("diagnostic warning_count=" + warningCount)
+                : List.of();
+        return new LinkedHashMap<>(Map.of(
                 "generated_at", OffsetDateTime.now(),
                 "source_window", sourceWindow,
-                "warning_count", warningCount);
+                "warning_count", warningCount,
+                "trace_id", traceId(),
+                "provider_name", upper(blankAs(marketDataProviderRouter.activeProviderId(), "mock")),
+                "is_delayed", false,
+                "warnings", warnings));
     }
 
     private List<TradingSignalEntity> selectRecentSignals(String country, int hours, int limit) {
@@ -862,6 +944,231 @@ public class AdminDiagnosticsService {
             return false;
         }
         return value.toLowerCase().contains(fragment.toLowerCase());
+    }
+
+    private Map<String, Long> providerDistributionFromQuotes(List<MarketQuoteSnapshotEntity> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return Map.of();
+        }
+        return rows.stream()
+                .collect(Collectors.groupingBy(
+                        row -> upper(blankAs(row.getProviderName(), "UNKNOWN")),
+                        LinkedHashMap::new,
+                        Collectors.counting()));
+    }
+
+    private String summarizeProviderName(Map<String, Long> distribution) {
+        if (distribution == null || distribution.isEmpty()) {
+            return upper(blankAs(marketDataProviderRouter.activeProviderId(), "mock"));
+        }
+        if (distribution.size() == 1) {
+            return distribution.keySet().iterator().next();
+        }
+        if (distribution.containsKey("MOCK")) {
+            return "MIXED_WITH_MOCK";
+        }
+        return "MIXED";
+    }
+
+    private boolean isDelayedQuote(MarketQuoteSnapshotEntity row) {
+        if (row == null) {
+            return true;
+        }
+        OffsetDateTime base = row.getSnapshotUtc() != null ? row.getSnapshotUtc() : row.getCreatedAt();
+        if (base == null) {
+            return true;
+        }
+        return base.isBefore(OffsetDateTime.now().minusMinutes(Math.max(1L, quoteFreshnessThresholdMinutes)));
+    }
+
+    private Map<String, Object> recentCollectionEvents(List<com.wangbyul.gnd.core.domain.MarketProviderJobEntity> providerJobs) {
+        List<Map<String, Object>> recentJobs = providerJobs.stream()
+                .limit(10)
+                .map(job -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("provider_name", upper(blankAs(job.getProviderName(), "UNKNOWN")));
+                    item.put("job_type", job.getJobType() == null ? "" : job.getJobType().name());
+                    item.put("job_name", blankAs(job.getJobName(), ""));
+                    item.put("status", job.getStatus() == null ? "" : job.getStatus().name());
+                    item.put("latency_ms", job.getLatencyMs());
+                    item.put("empty_response", Boolean.TRUE.equals(job.getEmptyResponse()));
+                    item.put("scheduled_at", job.getScheduledAt());
+                    item.put("trace_id", blankAs(job.getTraceId(), ""));
+                    item.put("warn", (job.getLatencyMs() != null && job.getLatencyMs() > providerLatencyWarningMs)
+                            || Boolean.TRUE.equals(job.getEmptyResponse())
+                            || (job.getStatus() != null && "FAILED".equals(job.getStatus().name())));
+                    return item;
+                })
+                .toList();
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("latency_warning_ms", providerLatencyWarningMs);
+        data.put("items", recentJobs);
+        data.put("failed_count", recentJobs.stream()
+                .filter(item -> "FAILED".equals(String.valueOf(item.get("status"))))
+                .count());
+        data.put("delayed_count", recentJobs.stream()
+                .filter(item -> item.get("latency_ms") instanceof Number n && n.longValue() > providerLatencyWarningMs)
+                .count());
+        return data;
+    }
+
+    private Map<String, Object> recentWarningErrorSummary(OffsetDateTime since, String provider) {
+        List<com.wangbyul.gnd.core.domain.MarketProviderJobEntity> jobs = (isBlank(provider)
+                ? marketProviderJobRepository.findTop100ByScheduledAtAfterOrderByScheduledAtDesc(since)
+                : marketProviderJobRepository.findTop100ByProviderNameAndScheduledAtAfterOrderByScheduledAtDesc(
+                        provider.trim().toLowerCase(Locale.ROOT),
+                        since));
+        List<ApiResponseAuditEntity> audits = selectProviderAuditRows(provider, null).stream()
+                .filter(row -> row.getRequestTimeUtc() != null && row.getRequestTimeUtc().isAfter(since))
+                .limit(100)
+                .toList();
+
+        List<Map<String, Object>> providerJobWarnings = jobs.stream()
+                .filter(job -> Boolean.TRUE.equals(job.getEmptyResponse())
+                        || (job.getStatus() != null && "FAILED".equals(job.getStatus().name()))
+                        || (job.getLatencyMs() != null && job.getLatencyMs() > providerLatencyWarningMs))
+                .limit(8)
+                .map(job -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("type", "MARKET_PROVIDER_JOB");
+                    item.put("provider_name", upper(blankAs(job.getProviderName(), "UNKNOWN")));
+                    item.put("status", job.getStatus() == null ? "" : job.getStatus().name());
+                    item.put("latency_ms", job.getLatencyMs());
+                    item.put("empty_response", Boolean.TRUE.equals(job.getEmptyResponse()));
+                    item.put("error", blankAs(job.getLastError(), ""));
+                    item.put("time_utc", job.getScheduledAt());
+                    item.put("trace_id", blankAs(job.getTraceId(), ""));
+                    return item;
+                })
+                .toList();
+
+        List<Map<String, Object>> apiErrors = audits.stream()
+                .filter(row -> !Boolean.TRUE.equals(row.getSuccess()))
+                .limit(8)
+                .map(row -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("type", "PROVIDER_API_AUDIT");
+                    item.put("provider_name", upper(blankAs(row.getProvider(), "UNKNOWN")));
+                    item.put("api_name", blankAs(row.getApiName(), ""));
+                    item.put("http_status", row.getHttpStatus());
+                    item.put("error_code", blankAs(row.getErrorCode(), ""));
+                    item.put("latency_ms", row.getLatencyMs());
+                    item.put("time_utc", row.getRequestTimeUtc());
+                    item.put("trace_id", blankAs(row.getTraceId(), ""));
+                    return item;
+                })
+                .toList();
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("provider_job_warning_count", providerJobWarnings.size());
+        data.put("provider_api_error_count", apiErrors.size());
+        data.put("provider_job_warnings", providerJobWarnings);
+        data.put("provider_api_errors", apiErrors);
+        data.put("log_todo", List.of(
+                "애플리케이션 로그(WARN/ERROR) 원문 수집/집계는 아직 DB 진단 API에 연결되지 않음",
+                "현재 진단은 market_provider_job/api_response_audit/gap 기반 요약만 제공"));
+        return data;
+    }
+
+    private Map<String, Object> featureToggleStatusSummary() {
+        List<String> keys = List.of(
+                "LIVE_TRADE",
+                "AUTO_ORDER_WITH_ADMIN_APPROVAL",
+                "AUTO_ORDER_FULLY_AUTOMATED",
+                "RAG_ASSISTANT");
+        Map<String, Boolean> effective = keys.stream()
+                .collect(Collectors.toMap(
+                        key -> key,
+                        key -> systemFeatureToggleService.isFeatureEnabled(key, null, null, null),
+                        (a, b) -> a,
+                        LinkedHashMap::new));
+        List<FeatureToggleDto> recent = systemFeatureToggleService.list(null, null, null, null, 20);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("effective", effective);
+        data.put("config_live_trade_enabled", liveTradeEnabled);
+        data.put("recent_items", recent.stream()
+                .limit(10)
+                .map(row -> Map.of(
+                        "feature_key", blankAs(row.getFeatureKey(), ""),
+                        "enabled", Boolean.TRUE.equals(row.getEnabled()),
+                        "scope_type", row.getScopeType() == null ? "GLOBAL" : row.getScopeType().name(),
+                        "scope_value", blankAs(row.getScopeValue(), "*"),
+                        "updated_by", blankAs(row.getUpdatedBy(), ""),
+                        "updated_at", row.getUpdatedAt(),
+                        "trace_id", blankAs(row.getTraceId(), "")))
+                .toList());
+        return data;
+    }
+
+    private Map<String, Object> tracePropagationSummary() {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("mdc_key", "trace_id");
+        data.put("api_envelope_field", "trace_id");
+        data.put("audit_trace_fields", List.of(
+                "market_provider_job.trace_id",
+                "api_response_audit.trace_id",
+                "market_data_gap_event.trace_id",
+                "signal_audit_log.trace_id",
+                "assistant_rag_audit_log.trace_id"));
+        data.put("status", "PARTIAL_VERIFIED");
+        data.put("notes", List.of(
+                "HTTP 응답 envelope와 주요 감사 테이블에는 trace_id 저장 경로가 존재함",
+                "애플리케이션 원문 로그와 DB trace_id의 상호참조 집계 API는 후속 고도화 필요"));
+        return data;
+    }
+
+    private Map<String, Object> marketCollectionAuditStatusSummary() {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("tables", Map.of(
+                "market_provider_job", "수집 잡 실행/결과 감사(성공/실패/빈응답/지연/trace_id)",
+                "api_response_audit", "provider API 요청/응답 감사(http_status/latency/error/trace_id)",
+                "market_data_gap_event", "데이터 갭/지연/결측 이벤트 감사",
+                "market_data_quality_snapshot", "품질 스냅샷(지연율/결측률/중복률/이상치율)"));
+        data.put("status", "AVAILABLE");
+        data.put("todo", List.of(
+                "서버 로그 WARN/ERROR 원문 요약을 진단 API와 직접 연결",
+                "배포 직후 자동 smoke-check 결과를 별도 감사 테이블로 저장"));
+        return data;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> deploymentVerificationChecklist(Map<String, Object> summaryData) {
+        boolean mockDetected = Boolean.TRUE.equals(((Map<String, Object>) summaryData.getOrDefault("warning_flags", Map.of()))
+                .get("mock_provider_detected"));
+        boolean delayed = Boolean.TRUE.equals(summaryData.get("is_delayed"));
+        boolean liveTradeToggle = systemFeatureToggleService.isFeatureEnabled("LIVE_TRADE", null, null, null);
+        return List.of(
+                verificationItem("provider_visible", true, "provider_name / 분포 응답 포함"),
+                verificationItem("mock_warning_exposed", mockDetected, "MOCK provider 경고 플래그/문구 노출"),
+                verificationItem("trace_path_documented", true, "trace_propagation 섹션 확인"),
+                verificationItem("data_delay_check", !delayed, delayed ? "지연 경고 존재" : "지연 없음"),
+                verificationItem("live_trade_default_off", !liveTradeEnabled && !liveTradeToggle, "config+toggle 모두 OFF"),
+                verificationItem(
+                        "audit_tables_present",
+                        true,
+                        "market_provider_job/api_response_audit/market_data_gap_event/market_data_quality_snapshot"));
+    }
+
+    private Map<String, Object> verificationItem(String key, boolean ok, String note) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("check_key", key);
+        item.put("ok", ok);
+        item.put("status", ok ? "PASS" : "WARN");
+        item.put("note", note);
+        return item;
+    }
+
+    private boolean marketProviderRouterAllowMock() {
+        return marketDataProviderRouter.allowMock();
+    }
+
+    private String upper(String value) {
+        return blankAs(value, "").toUpperCase(Locale.ROOT);
+    }
+
+    private String traceId() {
+        String trace = MDC.get("trace_id");
+        return (trace == null || trace.isBlank()) ? UUID.randomUUID().toString() : trace;
     }
 
     private BigDecimal zero(int scale) {

@@ -16,6 +16,7 @@ app:
   market:
     provider:
       active: mock
+      allow-mock: false
       fallback-to-mock-on-failure: true
       mock-bars-per-asset: 3
       mock-latency-ms: 25
@@ -51,3 +52,5 @@ app:
     mapping-max-links-per-news: 6
   news:
     max-retention-days: 7
+  trade:
+    live-enabled: false

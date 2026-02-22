@@ -14,16 +14,24 @@ import com.wangbyul.gnd.api.service.signal.BacktestComparisonService;
 import com.wangbyul.gnd.api.service.signal.TradingSignalEngineService;
 import com.wangbyul.gnd.core.dto.ApiEnvelope;
 import com.wangbyul.gnd.core.repository.InsightLogRepository;
+import com.wangbyul.gnd.core.repository.MarketQuoteSnapshotRepository;
 import com.wangbyul.gnd.core.repository.NewsRepository;
+import com.wangbyul.gnd.core.market.provider.MarketDataProviderRouter;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -46,20 +54,29 @@ public class InsightController {
 
     private final InsightLogRepository insightLogRepository;
     private final NewsRepository newsRepository;
+    private final MarketQuoteSnapshotRepository marketQuoteSnapshotRepository;
+    private final MarketDataProviderRouter marketDataProviderRouter;
     private final StockSignalService stockSignalService;
     private final TradingSignalEngineService tradingSignalEngineService;
     private final BacktestComparisonService backtestComparisonService;
     private final AssistantDashboardService assistantDashboardService;
 
+    @Value("${app.universe.quote-freshness-threshold-minutes:180}")
+    private long quoteFreshnessThresholdMinutes;
+
     public InsightController(
             InsightLogRepository insightLogRepository,
             NewsRepository newsRepository,
+            MarketQuoteSnapshotRepository marketQuoteSnapshotRepository,
+            MarketDataProviderRouter marketDataProviderRouter,
             StockSignalService stockSignalService,
             TradingSignalEngineService tradingSignalEngineService,
             BacktestComparisonService backtestComparisonService,
             AssistantDashboardService assistantDashboardService) {
         this.insightLogRepository = insightLogRepository;
         this.newsRepository = newsRepository;
+        this.marketQuoteSnapshotRepository = marketQuoteSnapshotRepository;
+        this.marketDataProviderRouter = marketDataProviderRouter;
         this.stockSignalService = stockSignalService;
         this.tradingSignalEngineService = tradingSignalEngineService;
         this.backtestComparisonService = backtestComparisonService;
@@ -127,6 +144,162 @@ public class InsightController {
         return trace == null ? "" : trace;
     }
 
+    private Map<String, Object> metaWithStandardFields(Map<String, Object> base) {
+        Map<String, Object> meta = new LinkedHashMap<>();
+        if (base != null) {
+            meta.putAll(base);
+        }
+        meta.put("trace_id", traceId());
+        meta.putIfAbsent("provider_name", "");
+        meta.putIfAbsent("is_delayed", false);
+        meta.putIfAbsent("warnings", List.of());
+        return meta;
+    }
+
+    private Map<String, Object> metaWithMarketDataContext(Map<String, Object> base, List<String> assetCodes) {
+        Map<String, Object> meta = metaWithStandardFields(base);
+        List<String> distinctAssetCodes = assetCodes == null
+                ? List.of()
+                : assetCodes.stream()
+                        .filter(Objects::nonNull)
+                        .map(String::trim)
+                        .filter(code -> !code.isBlank())
+                        .distinct()
+                        .limit(30)
+                        .toList();
+
+        List<String> providerNames = new ArrayList<>();
+        int delayedAssetCount = 0;
+        int missingQuoteCount = 0;
+        for (String assetCode : distinctAssetCodes) {
+            var quote = marketQuoteSnapshotRepository.findTop1ByAssetCodeOrderBySnapshotUtcDesc(assetCode).orElse(null);
+            if (quote == null) {
+                missingQuoteCount++;
+                continue;
+            }
+            String provider = normalizeProviderName(quote.getProviderName());
+            providerNames.add(provider);
+            OffsetDateTime baseTime = quote.getSnapshotUtc() != null ? quote.getSnapshotUtc() : quote.getCreatedAt();
+            if (baseTime == null
+                    || baseTime.isBefore(OffsetDateTime.now().minusMinutes(Math.max(1L, quoteFreshnessThresholdMinutes)))) {
+                delayedAssetCount++;
+            }
+        }
+
+        LinkedHashSet<String> providerSet = new LinkedHashSet<>(providerNames);
+        String providerName = providerSet.isEmpty()
+                ? normalizeProviderName(marketDataProviderRouter.activeProviderId())
+                : (providerSet.size() == 1 ? providerSet.iterator().next() : (providerSet.contains("MOCK") ? "MIXED_WITH_MOCK" : "MIXED"));
+        boolean isDelayed = delayedAssetCount > 0 || (missingQuoteCount > 0 && !distinctAssetCodes.isEmpty());
+        boolean mockDetected = containsMockProvider(providerName) || providerSet.stream().anyMatch(this::containsMockProvider);
+
+        List<String> warnings = new ArrayList<>();
+        if (mockDetected) {
+            warnings.add("시장데이터 provider_name=MOCK 입니다. 실거래 판단용 실데이터가 아닙니다.");
+        }
+        if (isDelayed) {
+            warnings.add("일부 종목의 시세가 지연되었거나 수집되지 않았습니다.");
+        }
+        if (missingQuoteCount > 0) {
+            warnings.add("시세 미수신 종목 " + missingQuoteCount + "건");
+        }
+
+        meta.put("provider_name", providerName);
+        meta.put("provider_names", providerSet.stream().toList());
+        meta.put("is_delayed", isDelayed);
+        meta.put("warnings", warnings);
+        meta.put("mock_provider_warning", mockDetected);
+        if (!distinctAssetCodes.isEmpty()) {
+            meta.put("asset_count_evaluated", distinctAssetCodes.size());
+            meta.put("delayed_asset_count", delayedAssetCount);
+            meta.put("missing_quote_asset_count", missingQuoteCount);
+        }
+        return meta;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> metaWithAssistantDashboardContext(Map<String, Object> base, Map<String, Object> dashboard) {
+        Map<String, Object> meta = metaWithStandardFields(base);
+        List<String> assetCodes = new ArrayList<>();
+        LinkedHashSet<String> providers = new LinkedHashSet<>();
+        List<String> warnings = new ArrayList<>();
+        boolean delayed = false;
+        if (dashboard != null) {
+            Object watchlistObj = dashboard.get("watchlist");
+            if (watchlistObj instanceof List<?> watchlistRows) {
+                for (Object rowObj : watchlistRows) {
+                    if (!(rowObj instanceof Map<?, ?> row)) {
+                        continue;
+                    }
+                    Object code = row.get("asset_code");
+                    if (code instanceof String codeStr && !codeStr.isBlank()) {
+                        assetCodes.add(codeStr.trim());
+                    }
+                    Object provider = row.get("quote_provider");
+                    if (provider instanceof String providerStr && !providerStr.isBlank()) {
+                        providers.add(normalizeProviderName(providerStr));
+                    }
+                    Object age = row.get("quote_age_seconds");
+                    if (age instanceof Number n && n.longValue() > Math.max(60L, quoteFreshnessThresholdMinutes * 60L)) {
+                        delayed = true;
+                    }
+                }
+            }
+            Object statusBarObj = dashboard.get("status_bar");
+            if (statusBarObj instanceof Map<?, ?> statusBar) {
+                Object warningObj = statusBar.get("warnings");
+                if (warningObj instanceof List<?> warningRows) {
+                    for (Object item : warningRows) {
+                        if (item instanceof String s && !s.isBlank()) {
+                            warnings.add(s);
+                            if (s.contains("지연") || s.contains("갭")) {
+                                delayed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Map<String, Object> enriched = metaWithMarketDataContext(meta, assetCodes);
+        Object existingWarnings = enriched.get("warnings");
+        List<String> mergedWarnings = new ArrayList<>();
+        if (existingWarnings instanceof List<?> rows) {
+            for (Object row : rows) {
+                if (row instanceof String s && !s.isBlank()) {
+                    mergedWarnings.add(s);
+                }
+            }
+        }
+        for (String warning : warnings) {
+            if (!mergedWarnings.contains(warning)) {
+                mergedWarnings.add(warning);
+            }
+        }
+        if (!providers.isEmpty()) {
+            enriched.put("provider_name", providers.size() == 1
+                    ? providers.iterator().next()
+                    : (providers.stream().anyMatch(this::containsMockProvider) ? "MIXED_WITH_MOCK" : "MIXED"));
+            enriched.put("provider_names", providers.stream().toList());
+            enriched.put("mock_provider_warning", providers.stream().anyMatch(this::containsMockProvider));
+        }
+        if (delayed) {
+            enriched.put("is_delayed", true);
+        }
+        enriched.put("warnings", mergedWarnings);
+        return enriched;
+    }
+
+    private String normalizeProviderName(String value) {
+        if (value == null || value.isBlank()) {
+            return "UNKNOWN";
+        }
+        return value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private boolean containsMockProvider(String providerName) {
+        return providerName != null && providerName.toUpperCase(Locale.ROOT).contains("MOCK");
+    }
+
     /**
      * 국가별 뉴스 연관 주식 시그널(개인 참고용) 조회.
      */
@@ -138,11 +311,12 @@ public class InsightController {
         List<StockSignalDto> data = stockSignalService.buildSignals(country, period, limit);
         return ApiEnvelope.<List<StockSignalDto>>builder()
                 .data(data)
-                .meta(Map.of(
-                        "country", country,
-                        "period", period,
-                        "limit", limit,
-                        "model", "rule-heuristic-v1"))
+                .meta(metaWithStandardFields(
+                        Map.of(
+                                "country", country,
+                                "period", period,
+                                "limit", limit,
+                                "model", "rule-heuristic-v1")))
                 .traceId(traceId())
                 .build();
     }
@@ -158,13 +332,15 @@ public class InsightController {
         List<TradingSignalViewDto> data = tradingSignalEngineService.getScalpSignals(country, theme, limit);
         return ApiEnvelope.<List<TradingSignalViewDto>>builder()
                 .data(data)
-                .meta(Map.of(
-                        "country", country,
-                        "theme", theme == null ? "" : theme,
-                        "theme_code", tradingSignalEngineService.normalizeThemeForApi(theme),
-                        "limit", limit,
-                        "panel", "scalp",
-                        "selection_policy", "universe-dedup-v2"))
+                .meta(metaWithMarketDataContext(
+                        Map.of(
+                                "country", country,
+                                "theme", theme == null ? "" : theme,
+                                "theme_code", tradingSignalEngineService.normalizeThemeForApi(theme),
+                                "limit", limit,
+                                "panel", "scalp",
+                                "selection_policy", "universe-dedup-v2"),
+                        data.stream().map(TradingSignalViewDto::getAssetCode).toList()))
                 .traceId(traceId())
                 .build();
     }
@@ -180,13 +356,15 @@ public class InsightController {
         List<TradingSignalViewDto> data = tradingSignalEngineService.getSwingSignals(country, theme, limit);
         return ApiEnvelope.<List<TradingSignalViewDto>>builder()
                 .data(data)
-                .meta(Map.of(
-                        "country", country,
-                        "theme", theme == null ? "" : theme,
-                        "theme_code", tradingSignalEngineService.normalizeThemeForApi(theme),
-                        "limit", limit,
-                        "panel", "swing",
-                        "selection_policy", "universe-dedup-v2"))
+                .meta(metaWithMarketDataContext(
+                        Map.of(
+                                "country", country,
+                                "theme", theme == null ? "" : theme,
+                                "theme_code", tradingSignalEngineService.normalizeThemeForApi(theme),
+                                "limit", limit,
+                                "panel", "swing",
+                                "selection_policy", "universe-dedup-v2"),
+                        data.stream().map(TradingSignalViewDto::getAssetCode).toList()))
                 .traceId(traceId())
                 .build();
     }
@@ -200,7 +378,9 @@ public class InsightController {
         TradingSignalViewDto data = tradingSignalEngineService.getPositionSignal(assetCode);
         return ApiEnvelope.<TradingSignalViewDto>builder()
                 .data(data)
-                .meta(Map.of("asset_code", assetCode, "panel", "position"))
+                .meta(metaWithMarketDataContext(
+                        Map.of("asset_code", assetCode, "panel", "position"),
+                        List.of(data == null ? assetCode : data.getAssetCode())))
                 .traceId(traceId())
                 .build();
     }
@@ -217,14 +397,16 @@ public class InsightController {
         List<TradingSignalViewDto> data = tradingSignalEngineService.getDiscoverySignals(country, theme, limit);
         return ApiEnvelope.<List<TradingSignalViewDto>>builder()
                 .data(data)
-                .meta(Map.of(
-                        "country", country,
-                        "theme", theme == null ? "" : theme,
-                        "theme_code", tradingSignalEngineService.normalizeThemeForApi(theme),
-                        "period", period,
-                        "limit", limit,
-                        "panel", "discovery",
-                        "selection_policy", "universe-dedup-v2"))
+                .meta(metaWithMarketDataContext(
+                        Map.of(
+                                "country", country,
+                                "theme", theme == null ? "" : theme,
+                                "theme_code", tradingSignalEngineService.normalizeThemeForApi(theme),
+                                "period", period,
+                                "limit", limit,
+                                "panel", "discovery",
+                                "selection_policy", "universe-dedup-v2"),
+                        data.stream().map(TradingSignalViewDto::getAssetCode).toList()))
                 .traceId(traceId())
                 .build();
     }
@@ -265,7 +447,9 @@ public class InsightController {
         SignalDetailDto data = tradingSignalEngineService.getSignalDetail(signalId, assistant);
         return ApiEnvelope.<SignalDetailDto>builder()
                 .data(data)
-                .meta(Map.of("signal_id", signalId, "assistant", assistant))
+                .meta(metaWithMarketDataContext(
+                        Map.of("signal_id", signalId, "assistant", assistant),
+                        List.of(data == null ? "" : data.getAssetCode())))
                 .traceId(traceId())
                 .build();
     }
@@ -281,11 +465,13 @@ public class InsightController {
         Map<String, Object> data = assistantDashboardService.buildDashboard(country, theme, limit);
         return ApiEnvelope.<Map<String, Object>>builder()
                 .data(data)
-                .meta(Map.of(
-                        "country", country,
-                        "theme", theme == null ? "" : theme,
-                        "limit", limit,
-                        "view", "assistant"))
+                .meta(metaWithAssistantDashboardContext(
+                        Map.of(
+                                "country", country,
+                                "theme", theme == null ? "" : theme,
+                                "limit", limit,
+                                "view", "assistant"),
+                        data))
                 .traceId(traceId())
                 .build();
     }

@@ -36,6 +36,10 @@ public class MarketDataProviderRouter {
         return properties.isFallbackToMockOnFailure();
     }
 
+    public boolean allowMock() {
+        return properties.isAllowMock();
+    }
+
     public int mockBarsPerAsset() {
         return Math.max(1, properties.getMockBarsPerAsset());
     }
