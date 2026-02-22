@@ -36,6 +36,22 @@ window.store = {
     DEV: "기술",
     IND: "산업"
   },
+  strategyLabels: {
+    SCALP: "단타",
+    SWING: "중기",
+    CHART_RESPONSE: "차트대응",
+    DISCOVERY: "6개월발굴"
+  },
+  featureToggleDescriptions: {
+    SIGNAL_GENERATION: "시그널 엔진 전체 생성 스위치",
+    SCALP_ENGINE: "단타 전략 엔진 활성화",
+    SWING_ENGINE: "중기 전략 엔진 활성화",
+    POSITION_ENGINE: "차트 대응 전략 엔진 활성화",
+    DISCOVERY_ENGINE: "발굴 전략 엔진 활성화",
+    RAG_ASSISTANT: "RAG/경량모델 보조설명 계층 활성화",
+    LIVE_TRADE: "실주문 관련 기능 사용 가능 여부 (기본 OFF)",
+    AUTO_ORDER_FULLY_AUTOMATED: "완전자동 주문 파이프라인 사용 여부 (고위험)"
+  },
   state: {
     activeTab: "home",
     country: "KR",
@@ -71,7 +87,16 @@ window.store = {
     adminApiKey: "",
     adminDiagnostics: null,
     adminTraceDetail: null,
-    adminError: null
+    adminError: null,
+    assistantDashboard: null,
+    assistantTraceId: "",
+    assistantError: null,
+    assistantSelectedStrategy: "SCALP",
+    assistantSelectedSignalId: "",
+    assistantSelectedAssetCode: "",
+    assistantDetail: null,
+    assistantDetailTraceId: "",
+    assistantDetailLoading: false
   },
   set(next) {
     // 기존 상태를 유지한 채 전달된 값만 병합 갱신

@@ -200,3 +200,12 @@
 - [T193] UI 최소 보강(구조 유지): `web/ui.js` 시그널 상세 모달에 RAG 보조요약/근거요약/주의점/추가조건 표시를 추가하고, 관리자 trace 상세 영역에 `assistant_summary`/source/fallback/highlights/cautions 표시를 추가.
 - [T194] 테스트 초안 보강: `AssistantRagServiceTest` 신규 추가(정상, timeout fallback, feature toggle 비활성화, 규칙엔진 액션 불일치 fallback, trace 요약 케이스), `TradingSignalEngineServicePanelSelectionTest` 생성자에 `AssistantRagService` mock 주입 반영.
 - [T195] 로컬 검증 제약 기록(5차): `./gradlew.bat :core:compileJava :api:compileJava :api:test --tests ...` 실행 시 Windows 로컬 JDK21 toolchain 부재(현재 JDK25만 설치, toolchain download repo 미설정)로 컴파일/테스트 미실행 상태 확인.
+- [T196] PROMPT-8-REBUILD 6차 착수: UI/UX 통합 정리 범위(뉴스 홈 유지, 신규 AI 비서 화면, 관리자 진단/킬스위치 가독성 강화) 요구사항 분석 및 기존 탭/자동갱신/시그널 상세/RAG 진단 재사용 전략 확정.
+- [T197] AI 비서 전용 백엔드 집계 API 추가: `AssistantDashboardService` 신규 구현(전략패널 집계, 관심종목 dedup, 최신 시세/거래량/뉴스건수 보강, 상태바/Provider/수집상태/토글/리스크 요약 조합) 및 `InsightController`에 `GET /api/insight/assistant/dashboard` 추가.
+- [T198] 관리자 진단 RAG 지표 보강: `AdminDiagnosticsService.getSignalConfidenceDistribution()` 응답에 `assistant_rag_summary`(성공률/지연/fallback/timeout/최근 오류 샘플) 집계를 추가하여 관리자 대시보드에서 RAG 운영상태를 함께 확인 가능하도록 확장.
+- [T199] 프론트 상태/라우팅 확장: `web/store.js`, `web/router.js`, `web/api.js`, `web/app.js`에 `assistant` 탭 상태/해시(`tab`) 지원, AI 비서 대시보드 로더/상세 로더/자동갱신 분기 추가, 전역 필터 변경 시 홈/비서/관리자 탭별 로더로 위임되도록 보정.
+- [T200] AI 비서 화면 추가: `web/index.html`, `web/ui.js`, `web/style.css`에 `AI 비서` 탭/상태바/관심종목 패널/전략 탭/종목 상세/리스크 요약 영역을 신규 추가하고, 상세 패널에 뉴스/가격/리스크 근거 + RAG 보조설명 + 참고용 진입/익절/손절 정보를 표시하도록 구현.
+- [T201] 기존 전략패널 표시 정리(회귀 최소): `web/ui.js`의 전략 카드 렌더에서 `NO_MATCHED_NEWS`/`INSUFFICIENT_DATA` 상태를 감지해 "뉴스확률 보류/데이터부족" 배지를 표시하고 무의미한 동일 수치 반복 표기를 완화.
+- [T202] 관리자 진단 UI 고도화: `web/ui.js`, `web/style.css`에서 RAG 성공률/지연/fallback 카드, `trace_id` 상세 섹션형 뷰(수집/Provider, 전략 실행, RAG 감사 로그), 킬스위치 설명/범위/변경자/사유/시각/위험토글 경고 렌더링 추가.
+- [T203] 정적 점검 수행: `git diff --check` 실행하여 patch/공백 이슈 없음 확인(개행 CRLF 경고만 존재), 런타임 문법 점검은 로컬 `node` 미설치로 미실행 상태 기록.
+- [T204] 로컬 빌드/테스트 제약 재확인(6차): `:api/:web` 컴파일 및 테스트 회귀는 Windows 로컬 JDK21 Gradle toolchain 부재로 미실행(현재 JDK25만 설치) 상태 유지, 서버/CI 또는 JDK21 환경에서 후속 검증 필요.

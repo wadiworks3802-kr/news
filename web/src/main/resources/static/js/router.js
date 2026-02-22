@@ -12,6 +12,7 @@ window.router = {
     const params = new URLSearchParams(hash);
     const detailCategory = params.get("detailCategory") || null;
     return {
+      tab: params.get("tab") || null,
       country: params.get("country") || null,
       category: params.get("category") || null,
       sort: params.get("sort") || null,
@@ -24,6 +25,7 @@ window.router = {
   },
   push(state) {
     const params = new URLSearchParams({
+      tab: state.activeTab || "home",
       country: state.country,
       category: state.category,
       sort: state.sort,

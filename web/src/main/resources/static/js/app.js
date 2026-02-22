@@ -12,6 +12,7 @@
 let skipNextHashReload = false;
 let requestSeq = 0;
 let adminRequestSeq = 0;
+let assistantRequestSeq = 0;
 let autoRefreshTimer = null;
 const inFlightControllers = new Set();
 
@@ -25,13 +26,22 @@ function normalizeCategory(category, fallback) {
   return fallback;
 }
 
+function normalizeTab(tab, fallback = "home") {
+  if (tab === "assistant" || tab === "admin" || tab === "home") {
+    return tab;
+  }
+  return fallback;
+}
+
 function applyHashToState(hashState) {
   const nextCategory = normalizeCategory(hashState.category, store.state.category);
   const nextView = hashState.view === "detail" ? "detail" : "home";
   const nextDetailCategory = normalizeCategory(hashState.detailCategory, "");
   const isDetailValid = nextView === "detail" && store.categories.includes(nextDetailCategory);
+  const nextTab = normalizeTab(hashState.tab, store.state.activeTab);
 
   store.set({
+    activeTab: nextTab,
     country: hashState.country || store.state.country,
     category: nextCategory,
     sort: hashState.sort || store.state.sort,
@@ -200,6 +210,15 @@ async function loadAdvancedPanels(seq) {
 
 async function loadNews(options = {}) {
   if (store.state.activeTab !== "home" && !options.forceWhenHidden) {
+    const next = ui.readFilter();
+    store.set({ ...next, page: 1 });
+    if (store.state.activeTab === "assistant") {
+      return loadAssistantDashboard({ forceWhenHidden: true });
+    }
+    if (store.state.activeTab === "admin") {
+      skipNextHashReload = router.push(store.state);
+      return loadAdminDiagnostics({ forceWhenHidden: true });
+    }
     return;
   }
   const useCurrentState = options.useCurrentState === true;
@@ -444,6 +463,168 @@ async function loadAdminTraceDetail() {
   }
 }
 
+function assistantStrategyRowsFromDashboard(dashboard, strategyKey) {
+  const strategies = dashboard?.strategies || {};
+  const strategy = strategies?.[strategyKey];
+  const items = Array.isArray(strategy?.items) ? strategy.items : [];
+  return items;
+}
+
+function resolveAssistantSelectedSignalId(dashboard, preferredStrategy) {
+  if (!dashboard) {
+    return "";
+  }
+  const explicit = dashboard.selected_signal_id || "";
+  if (explicit) {
+    return explicit;
+  }
+  const rows = assistantStrategyRowsFromDashboard(dashboard, preferredStrategy);
+  const first = rows.find((row) => row?.signal_id);
+  if (first?.signal_id) {
+    return first.signal_id;
+  }
+  const watch = Array.isArray(dashboard.watchlist) ? dashboard.watchlist : [];
+  return watch.find((row) => row?.signal_id)?.signal_id || "";
+}
+
+function ensureAssistantStrategySelection(dashboard) {
+  const current = store.state.assistantSelectedStrategy;
+  const strategyOrder = Array.isArray(dashboard?.strategy_order) ? dashboard.strategy_order : [];
+  if (current && strategyOrder.includes(current)) {
+    return current;
+  }
+  return strategyOrder[0] || "SCALP";
+}
+
+async function loadAssistantSignalDetail(signalId, options = {}) {
+  const targetSignalId = (signalId || "").trim();
+  if (!targetSignalId) {
+    store.set({
+      assistantSelectedSignalId: "",
+      assistantDetail: null,
+      assistantDetailTraceId: "",
+      assistantDetailLoading: false
+    });
+    ui.renderAssistantDetail(null, store.state.assistantDashboard);
+    return;
+  }
+  const controller = createController();
+  try {
+    if (!options.backgroundRefresh) {
+      store.set({ assistantDetailLoading: true, assistantSelectedSignalId: targetSignalId });
+      ui.renderAssistantDetailLoading(targetSignalId);
+    } else {
+      store.set({ assistantSelectedSignalId: targetSignalId, assistantDetailLoading: true });
+    }
+    const result = await api.getSignalDetail(targetSignalId, { signal: controller.signal });
+    if (store.state.activeTab !== "assistant" && !options.forceWhenHidden) {
+      return;
+    }
+    if ((store.state.assistantSelectedSignalId || "").trim() !== targetSignalId) {
+      return;
+    }
+    store.set({
+      assistantDetail: result?.data || null,
+      assistantDetailTraceId: result?.trace_id || "",
+      assistantDetailLoading: false
+    });
+    ui.renderAssistantDetail(store.state.assistantDetail, store.state.assistantDashboard, result?.trace_id || "");
+  } catch (err) {
+    if (isAbortError(err)) {
+      return;
+    }
+    store.set({ assistantDetailLoading: false });
+    ui.renderAssistantDetailError(err);
+  } finally {
+    removeController(controller);
+  }
+}
+
+async function loadAssistantDashboard(options = {}) {
+  if (store.state.activeTab !== "assistant" && !options.forceWhenHidden) {
+    return;
+  }
+  const seq = ++assistantRequestSeq;
+  if (!options.backgroundRefresh) {
+    ui.renderAssistantLoading();
+  }
+  if (!options.skipPush) {
+    skipNextHashReload = router.push(store.state);
+  }
+
+  const controller = createController();
+  try {
+    const result = await api.getAssistantDashboard({
+      country: store.state.country,
+      limit: 8
+    }, { signal: controller.signal });
+
+    if (seq !== assistantRequestSeq) {
+      return;
+    }
+
+    const dashboard = result?.data || {};
+    const nextStrategy = ensureAssistantStrategySelection(dashboard);
+    const nextSignalId = resolveAssistantSelectedSignalId(dashboard, nextStrategy);
+    store.set({
+      assistantDashboard: dashboard,
+      assistantTraceId: result?.trace_id || "",
+      assistantError: null,
+      assistantSelectedStrategy: nextStrategy,
+      assistantSelectedSignalId: nextSignalId,
+      assistantSelectedAssetCode: dashboard?.selected_asset_code || ""
+    });
+    ui.renderAssistantDashboard(store.state);
+
+    if (nextSignalId) {
+      await loadAssistantSignalDetail(nextSignalId, {
+        backgroundRefresh: options.backgroundRefresh,
+        forceWhenHidden: true
+      });
+    } else {
+      store.set({ assistantDetail: null, assistantDetailTraceId: "" });
+      ui.renderAssistantDetail(null, dashboard);
+    }
+  } catch (err) {
+    if (isAbortError(err) || seq !== assistantRequestSeq) {
+      return;
+    }
+    store.set({ assistantError: err });
+    ui.renderAssistantError(err);
+  } finally {
+    removeController(controller);
+  }
+}
+
+function changeAssistantStrategy(strategyKey) {
+  const nextStrategy = (strategyKey || "").trim();
+  if (!nextStrategy) {
+    return;
+  }
+  store.set({ assistantSelectedStrategy: nextStrategy });
+  ui.renderAssistantDashboard(store.state);
+  const dashboard = store.state.assistantDashboard;
+  const rows = assistantStrategyRowsFromDashboard(dashboard, nextStrategy);
+  const nextSignalId = rows.find((row) => row?.signal_id)?.signal_id || "";
+  if (nextSignalId) {
+    loadAssistantSignalDetail(nextSignalId, { forceWhenHidden: true });
+  } else {
+    store.set({ assistantDetail: null, assistantDetailTraceId: "", assistantSelectedSignalId: "" });
+    ui.renderAssistantDetail(null, dashboard);
+  }
+}
+
+function selectAssistantSignal(signalId, assetCode) {
+  store.set({
+    assistantSelectedSignalId: (signalId || "").trim(),
+    assistantSelectedAssetCode: (assetCode || "").trim()
+  });
+  ui.renderAssistantDashboard(store.state);
+  if (signalId) {
+    loadAssistantSignalDetail(signalId, { forceWhenHidden: true });
+  }
+}
+
 async function upsertFeatureToggle() {
   if (store.state.activeTab !== "admin") {
     return;
@@ -499,14 +680,19 @@ async function patchFeatureToggle(id, nextEnabled) {
 }
 
 function switchTab(tab) {
-  const nextTab = tab === "admin" ? "admin" : "home";
+  const nextTab = normalizeTab(tab, "home");
   if (store.state.activeTab === nextTab) {
     return;
   }
   store.set({ activeTab: nextTab });
   ui.setActiveTab(nextTab);
+  skipNextHashReload = router.push(store.state);
   if (nextTab === "admin") {
     loadAdminDiagnostics({ forceWhenHidden: true });
+    return;
+  }
+  if (nextTab === "assistant") {
+    loadAssistantDashboard({ forceWhenHidden: true, skipPush: true });
     return;
   }
   loadNews({ useCurrentState: true, skipPush: true, forceWhenHidden: true });
@@ -560,6 +746,10 @@ function startAutoRefresh() {
       loadAdminDiagnostics({ backgroundRefresh: true, forceWhenHidden: true });
       return;
     }
+    if (store.state.activeTab === "assistant") {
+      loadAssistantDashboard({ backgroundRefresh: true, forceWhenHidden: true, skipPush: true });
+      return;
+    }
     loadNews({ useCurrentState: true, skipPush: true, backgroundRefresh: true });
   }, intervalMs);
 }
@@ -578,6 +768,9 @@ $(function () {
     goHomeFeed,
     openSignalDetail,
     switchTab,
+    () => loadAssistantDashboard({ forceWhenHidden: true, skipPush: true }),
+    changeAssistantStrategy,
+    selectAssistantSignal,
     () => loadAdminDiagnostics({ forceWhenHidden: true }),
     loadAdminTraceDetail,
     upsertFeatureToggle,
@@ -590,6 +783,15 @@ $(function () {
       return;
     }
     applyHashToState(router.fromHash());
+    ui.setActiveTab(store.state.activeTab);
+    if (store.state.activeTab === "admin") {
+      loadAdminDiagnostics({ forceWhenHidden: true });
+      return;
+    }
+    if (store.state.activeTab === "assistant") {
+      loadAssistantDashboard({ forceWhenHidden: true, skipPush: true });
+      return;
+    }
     if (store.state.activeTab === "home") {
       loadNews({ useCurrentState: true, skipPush: true, forceWhenHidden: true });
     }
@@ -597,5 +799,11 @@ $(function () {
 
   startAutoRefresh();
   // 최초 1회 로드
-  loadNews({ useCurrentState: true, forceWhenHidden: true });
+  if (store.state.activeTab === "admin") {
+    loadAdminDiagnostics({ forceWhenHidden: true });
+  } else if (store.state.activeTab === "assistant") {
+    loadAssistantDashboard({ forceWhenHidden: true, skipPush: true });
+  } else {
+    loadNews({ useCurrentState: true, forceWhenHidden: true });
+  }
 });

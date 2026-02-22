@@ -37,6 +37,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -521,6 +522,7 @@ public class AdminDiagnosticsService {
         data.put("action_distribution_by_strategy", actionDistributionByStrategy);
         data.put("blocked_reason_distribution_by_strategy", blockedReasonByStrategy);
         data.put("duplicate_exposure_stats", duplicateExposureStats(rows));
+        data.put("assistant_rag_summary", assistantRagSummary(hours));
         return data;
     }
 
@@ -726,6 +728,66 @@ public class AdminDiagnosticsService {
         result.put("duplicate_asset_rows", byAsset.values().stream().filter(v -> v != null && v > 1).count());
         result.put("duplicate_asset_window_rows", byAssetWindow.values().stream().filter(v -> v != null && v > 1).count());
         return result;
+    }
+
+    private Map<String, Object> assistantRagSummary(int hours) {
+        OffsetDateTime since = OffsetDateTime.now().minusHours(Math.max(1, Math.min(hours, 72)));
+        List<AssistantRagAuditLogEntity> signalRows = assistantRagAuditLogRepository.findTop200ByRequestScopeOrderByCreatedAtDesc("SIGNAL_DETAIL");
+        List<AssistantRagAuditLogEntity> traceRows = assistantRagAuditLogRepository.findTop200ByRequestScopeOrderByCreatedAtDesc("TRACE_DETAIL");
+        List<AssistantRagAuditLogEntity> rows = java.util.stream.Stream.concat(signalRows.stream(), traceRows.stream())
+                .filter(row -> row.getCreatedAt() != null && row.getCreatedAt().isAfter(since))
+                .sorted(Comparator.comparing(AssistantRagAuditLogEntity::getCreatedAt).reversed())
+                .limit(300)
+                .toList();
+
+        long totalCount = assistantRagAuditLogRepository.countByCreatedAtAfter(since);
+        long failedCount = assistantRagAuditLogRepository.countBySuccessFalseAndCreatedAtAfter(since);
+        long fallbackCount = rows.stream().filter(row -> Boolean.TRUE.equals(row.getFallbackApplied())).count();
+        long timeoutCount = rows.stream()
+                .map(AssistantRagAuditLogEntity::getErrorCode)
+                .filter(code -> containsIgnoreCase(code, "TIMEOUT"))
+                .count();
+        BigDecimal avgLatency = rows.stream()
+                .map(AssistantRagAuditLogEntity::getLatencyMsTotal)
+                .filter(Objects::nonNull)
+                .map(BigDecimal::valueOf)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (!rows.isEmpty()) {
+            avgLatency = avgLatency.divide(BigDecimal.valueOf(rows.size()), 2, RoundingMode.HALF_UP);
+        } else {
+            avgLatency = zero(2);
+        }
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("window_hours", Math.max(1, Math.min(hours, 72)));
+        data.put("total_count", totalCount);
+        data.put("failed_count", failedCount);
+        data.put("fallback_count", fallbackCount);
+        data.put("timeout_count", timeoutCount);
+        data.put("success_rate", totalCount <= 0
+                ? zero(6)
+                : BigDecimal.valueOf(totalCount - failedCount).divide(BigDecimal.valueOf(totalCount), 6, RoundingMode.HALF_UP));
+        data.put("avg_latency_ms", avgLatency);
+        data.put("scope_distribution", rows.stream().collect(Collectors.groupingBy(
+                row -> blankAs(row.getRequestScope(), "UNKNOWN"),
+                LinkedHashMap::new,
+                Collectors.counting())));
+        data.put("recent_errors", rows.stream()
+                .filter(row -> !Boolean.TRUE.equals(row.getSuccess()) || Boolean.TRUE.equals(row.getFallbackApplied()))
+                .limit(8)
+                .map(row -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("request_scope", blankAs(row.getRequestScope(), ""));
+                    item.put("request_key", blankAs(row.getRequestKey(), ""));
+                    item.put("asset_code", blankAs(row.getAssetCode(), ""));
+                    item.put("error_code", blankAs(row.getErrorCode(), ""));
+                    item.put("fallback_applied", Boolean.TRUE.equals(row.getFallbackApplied()));
+                    item.put("latency_ms_total", row.getLatencyMsTotal());
+                    item.put("created_at", row.getCreatedAt());
+                    return item;
+                })
+                .toList());
+        return data;
     }
 
     private String strategyWindowKey(String signalWindow) {

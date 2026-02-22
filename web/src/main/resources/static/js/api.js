@@ -104,6 +104,16 @@ window.api = {
     }
     return body;
   },
+  async getAssistantDashboard(params = {}, options = {}) {
+    const base = window.API_BASE || "http://localhost:8080";
+    const qs = new URLSearchParams(params).toString();
+    const res = await fetch(`${base}/api/insight/assistant/dashboard?${qs}`, { signal: options.signal });
+    const body = await res.json();
+    if (!res.ok) {
+      throw body;
+    }
+    return body;
+  },
   async getPortfolioRisk(params = {}, options = {}) {
     const base = window.API_BASE || "http://localhost:8080";
     const qs = params && Object.keys(params).length ? `?${new URLSearchParams(params).toString()}` : "";

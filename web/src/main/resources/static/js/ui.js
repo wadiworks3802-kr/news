@@ -13,6 +13,9 @@ window.ui = {
     onBackToFeed,
     onOpenSignalDetail,
     onTabChange,
+    onAssistantRefresh,
+    onAssistantStrategyChange,
+    onAssistantSignalSelect,
     onAdminRefresh,
     onAdminTraceLoad,
     onToggleUpsert,
@@ -52,7 +55,22 @@ window.ui = {
       alert(`evidence_spans: ${JSON.stringify(value)}`);
     });
     $("#tab-home").on("click", () => onTabChange("home"));
+    $("#tab-assistant").on("click", () => onTabChange("assistant"));
     $("#tab-admin").on("click", () => onTabChange("admin"));
+    $("#assistant-refresh").on("click", onAssistantRefresh);
+    $(document).on("click", ".assistant-strategy-tab", function () {
+      const strategy = $(this).attr("data-strategy");
+      if (strategy) {
+        onAssistantStrategyChange(strategy);
+      }
+    });
+    $(document).on("click", ".assistant-watch-item, .assistant-signal-row", function () {
+      const signalId = ($(this).attr("data-signal-id") || "").trim();
+      const assetCode = ($(this).attr("data-asset-code") || "").trim();
+      if (signalId) {
+        onAssistantSignalSelect(signalId, assetCode);
+      }
+    });
     $("#admin-refresh").on("click", onAdminRefresh);
     $("#admin-trace-load").on("click", onAdminTraceLoad);
     $("#toggle-upsert").on("click", onToggleUpsert);
@@ -113,10 +131,14 @@ window.ui = {
   },
 
   setActiveTab(tab) {
+    const isHome = tab === "home";
+    const isAssistant = tab === "assistant";
     const isAdmin = tab === "admin";
-    $("#tab-home").toggleClass("active", !isAdmin);
+    $("#tab-home").toggleClass("active", isHome);
+    $("#tab-assistant").toggleClass("active", isAssistant);
     $("#tab-admin").toggleClass("active", isAdmin);
-    $("#home-view").toggleClass("hide", isAdmin);
+    $("#home-view").toggleClass("hide", !isHome);
+    $("#assistant-view").toggleClass("hide", !isAssistant);
     $("#admin-view").toggleClass("hide", !isAdmin);
   },
 
@@ -441,6 +463,14 @@ window.ui = {
       return `<div class="empty-box">${this.escapeHtml(emptyText)}</div>`;
     }
     return rows.map((row) => {
+      let breakdown = {};
+      try {
+        breakdown = row.probability_reason_breakdown_json ? JSON.parse(row.probability_reason_breakdown_json) : {};
+      } catch (e) {
+        breakdown = {};
+      }
+      const dataState = String(breakdown.data_state || "");
+      const isDataGap = dataState === "NO_MATCHED_NEWS" || dataState === "INSUFFICIENT_DATA";
       const signalId = this.escapeAttr(row.signal_id || "");
       const name = this.escapeHtml(row.asset_name || row.asset_code || "-");
       const action = this.escapeHtml(row.action || "WATCH");
@@ -462,8 +492,12 @@ window.ui = {
         stateBadge ? `<span class="badge">${stateBadge}</span>` : "",
         recommendationState ? `<span class="badge">${recommendationState}</span>` : "",
         dedupApplied ? `<span class="badge">중복억제</span>` : "",
-        qualityDegraded ? `<span class="badge">품질주의</span>` : ""
+        qualityDegraded ? `<span class="badge">품질주의</span>` : "",
+        isDataGap ? `<span class="badge">데이터부족</span>` : ""
       ].filter(Boolean).join("");
+      const probabilityText = isDataGap
+        ? `뉴스확률 보류 (${this.escapeHtml(dataState)})`
+        : `${row.strategy_key === "SCALP" ? `호/악 ${good}/${bad}` : `주간 ${weekly}`}`;
       return `
         <article class="signal-item">
           <div class="signal-top">
@@ -474,7 +508,7 @@ window.ui = {
           <div class="signal-metrics">
             <span>${primaryMetricLabel} ${primaryMetricValue}</span>
             <span>결합 ${combined}</span>
-            <span>${row.strategy_key === "SCALP" ? `호/악 ${good}/${bad}` : `주간 ${weekly}`}</span>
+            <span>${probabilityText}</span>
             ${blocked ? `<span>차단 ${blocked}</span>` : ""}
           </div>
           ${stateReason ? `<div class="signal-metrics"><span>${stateReason}</span></div>` : ""}
@@ -558,6 +592,332 @@ window.ui = {
       const until = row.lock_until ? new Date(row.lock_until).toLocaleString() : "미정";
       return `<div class="lock-item">${asset} · 사유 ${reason} · 해제예정 ${until}</div>`;
     }).join(""));
+  },
+
+  renderAssistantLoading() {
+    $("#assistant-meta").text("AI 비서 대시보드를 불러오는 중...");
+    $("#assistant-status-bar").html('<div class="empty-box">상태 수집 중...</div>');
+    $("#assistant-watch-meta").text("종목 로딩 중");
+    $("#assistant-watchlist").html('<div class="empty-box">관심종목 데이터를 준비 중입니다...</div>');
+    $("#assistant-strategy-meta").text("전략 데이터 로딩 중");
+    $("#assistant-strategy-tabs").html("");
+    $("#assistant-strategy-list").html('<div class="empty-box">전략 후보를 계산 중입니다...</div>');
+    $("#assistant-risk-meta").text("리스크 정책 로딩 중");
+    $("#assistant-risk-panel").html('<div class="empty-box">리스크/자금관리 데이터를 준비 중입니다...</div>');
+    $("#assistant-detail-meta").text("상세 대기");
+    $("#assistant-detail-panel").html('<div class="empty-box">종목을 선택하면 뉴스/가격/리스크 근거를 표시합니다.</div>');
+  },
+
+  renderAssistantError(err) {
+    const msg = this.escapeHtml(err?.message || err?.code || "AI 비서 대시보드 조회 실패");
+    $("#assistant-meta").text(`오류: ${msg}`);
+    $("#assistant-status-bar").html(`<div class="empty-box">${msg}</div>`);
+  },
+
+  renderAssistantDashboard(state) {
+    const dashboard = state?.assistantDashboard || null;
+    if (!dashboard) {
+      this.renderAssistantLoading();
+      return;
+    }
+
+    const statusBar = dashboard.status_bar || {};
+    const watchlist = Array.isArray(dashboard.watchlist) ? dashboard.watchlist : [];
+    const strategyOrder = Array.isArray(dashboard.strategy_order) ? dashboard.strategy_order : ["SCALP", "SWING", "CHART_RESPONSE", "DISCOVERY"];
+    const selectedStrategy = state.assistantSelectedStrategy || strategyOrder[0] || "SCALP";
+    const strategies = dashboard.strategies || {};
+    const selectedStrategyPayload = strategies[selectedStrategy] || {};
+    const selectedRows = Array.isArray(selectedStrategyPayload.items) ? selectedStrategyPayload.items : [];
+    const selectedSignalId = state.assistantSelectedSignalId || dashboard.selected_signal_id || "";
+    const providerStatus = statusBar.provider_status || {};
+    const collectionStatus = statusBar.data_collection_status || {};
+    const ragRuntime = statusBar.rag_runtime || {};
+    const warnings = Array.isArray(statusBar.warnings) ? statusBar.warnings : [];
+
+    $("#assistant-meta").text(
+      `${this.countryLabel(dashboard.country || state.country)} · trace_id=${state.assistantTraceId || ""} · ${new Date().toLocaleString()}`
+    );
+    $("#assistant-status-bar").html(this.renderAssistantStatusBar(statusBar, providerStatus, collectionStatus, ragRuntime, warnings));
+
+    $("#assistant-watch-meta").text(`관심종목 ${watchlist.length}개`);
+    $("#assistant-watchlist").html(
+      watchlist.length
+        ? watchlist.map((row) => this.renderAssistantWatchItem(row, selectedSignalId)).join("")
+        : '<div class="empty-box">추천/관심 종목이 없습니다. 데이터 수집 상태 또는 토글 설정을 확인하세요.</div>'
+    );
+
+    $("#assistant-strategy-meta").text(
+      `${this.escapeHtml(store.strategyLabels?.[selectedStrategy] || selectedStrategy)} · ${selectedRows.length}개`
+    );
+    $("#assistant-strategy-tabs").html(
+      strategyOrder.map((key) => {
+        const strategy = strategies[key] || {};
+        const rows = Array.isArray(strategy.items) ? strategy.items : [];
+        const label = strategy.label || store.strategyLabels?.[key] || key;
+        return `<button class="assistant-strategy-tab ${key === selectedStrategy ? "active" : ""}" type="button" data-strategy="${this.escapeAttr(key)}">${this.escapeHtml(label)} <span>${rows.length}</span></button>`;
+      }).join("")
+    );
+    $("#assistant-strategy-list").html(
+      selectedRows.length
+        ? selectedRows.map((row) => this.renderAssistantStrategyRow(row, selectedSignalId)).join("")
+        : '<div class="empty-box">선택한 전략의 후보가 없습니다.</div>'
+    );
+
+    const risk = dashboard.risk_panel || null;
+    const locks = Array.isArray(dashboard.locks) ? dashboard.locks : [];
+    $("#assistant-risk-meta").text(`모의/참고용 정책 · BUY_LOCK ${locks.length}건`);
+    $("#assistant-risk-panel").html(this.renderAssistantRiskPanel(risk, locks));
+  },
+
+  renderAssistantStatusBar(statusBar, providerStatus, collectionStatus, ragRuntime, warnings) {
+    const providerHealth = providerStatus.provider_health || {};
+    const providerKeys = Object.keys(providerHealth);
+    const providerText = providerKeys.length
+      ? providerKeys.map((key) => {
+        const item = providerHealth[key] || {};
+        const status = item.status || "UNKNOWN";
+        return `${key}:${status}`;
+      }).join(" | ")
+      : "provider 정보 없음";
+
+    const chips = [
+      `<div class="assistant-status-chip"><span>시장상태</span><strong>${this.escapeHtml(statusBar.market_state || "UNKNOWN")}</strong></div>`,
+      `<div class="assistant-status-chip"><span>Provider</span><strong>${this.escapeHtml(providerText)}</strong></div>`,
+      `<div class="assistant-status-chip"><span>수집상태</span><strong>${this.escapeHtml(collectionStatus.status || "UNKNOWN")}</strong></div>`,
+      `<div class="assistant-status-chip"><span>자동분석</span><strong>${statusBar.auto_analysis_enabled ? "ON" : "OFF"}</strong></div>`,
+      `<div class="assistant-status-chip"><span>주문모드</span><strong>${this.escapeHtml(statusBar.mode_label || "PAPER_ONLY")}</strong></div>`,
+      `<div class="assistant-status-chip"><span>RAG</span><strong>성공률 ${this.pct(ragRuntime.success_rate)} / fallback ${Number(ragRuntime.fallback_count || 0)}</strong></div>`,
+      `<div class="assistant-status-chip"><span>지연</span><strong>${this.num(providerStatus.avg_latency_ms, 0)}ms / RAG ${this.num(ragRuntime.avg_latency_ms, 0)}ms</strong></div>`
+    ];
+
+    const warningRows = warnings.length
+      ? `<div class="assistant-warning-list">${warnings.map((msg) => `<div class="assistant-warning-item">${this.escapeHtml(msg)}</div>`).join("")}</div>`
+      : "";
+
+    return `${chips.join("")}${warningRows}`;
+  },
+
+  renderAssistantWatchItem(row, selectedSignalId) {
+    const signalId = this.escapeAttr(row.signal_id || "");
+    const assetCode = this.escapeAttr(row.asset_code || "");
+    const selected = signalId && signalId === String(selectedSignalId || "");
+    const lastPrice = row.last_price == null ? "-" : Number(row.last_price).toLocaleString();
+    const changePct = row.change_pct == null ? null : Number(row.change_pct) * 100;
+    const changeClass = changePct == null ? "" : (changePct > 0 ? "up" : (changePct < 0 ? "down" : "flat"));
+    const volumeText = row.volume == null ? "-" : Number(row.volume).toLocaleString();
+    const confidence = Number(row.combined_confidence ?? 0).toFixed(3);
+    const newsCount = Number(row.news_count_24h || 0);
+    const riskBadge = this.escapeHtml(row.risk_badge || "정상");
+    const stateBadge = this.escapeHtml(row.state_badge || row.recommendation_state || "-");
+    const action = this.escapeHtml(row.action || "WATCH");
+    const dataState = this.escapeHtml(row.data_state || "");
+    const provider = this.escapeHtml(row.quote_provider || "-");
+    const quoteAge = row.quote_age_seconds == null ? "-" : `${Math.max(0, Number(row.quote_age_seconds || 0))}s`;
+    return `
+      <button type="button" class="assistant-watch-item ${selected ? "selected" : ""}" data-signal-id="${signalId}" data-asset-code="${assetCode}">
+        <div class="assistant-watch-top">
+          <span class="assistant-watch-name">${this.escapeHtml(row.asset_name || row.asset_code || "-")}</span>
+          <span class="assistant-watch-action">${action}</span>
+        </div>
+        <div class="assistant-watch-price">
+          <span class="price">${lastPrice}</span>
+          <span class="change ${changeClass}">${changePct == null ? "-" : `${changePct.toFixed(2)}%`}</span>
+        </div>
+        <div class="assistant-watch-meta-line">
+          <span class="badge">${this.escapeHtml(row.strategy_key || "-")}</span>
+          <span class="badge">${stateBadge}</span>
+          <span class="badge">${riskBadge}</span>
+          ${dataState ? `<span class="badge">상태 ${dataState}</span>` : ""}
+        </div>
+        <div class="assistant-watch-meta-line">
+          <span>거래량 ${this.escapeHtml(volumeText)}</span>
+          <span>뉴스 ${newsCount}건</span>
+          <span>신뢰 ${confidence}</span>
+        </div>
+        <div class="assistant-watch-meta-line">
+          <span>provider ${provider}</span>
+          <span>시세나이 ${quoteAge}</span>
+        </div>
+        <div class="assistant-watch-reason">${this.escapeHtml(row.recommendation_basis_text || row.news_basis_text || "-")}</div>
+      </button>
+    `;
+  },
+
+  renderAssistantStrategyRow(row, selectedSignalId) {
+    const signalId = this.escapeAttr(row.signal_id || "");
+    const assetCode = this.escapeAttr(row.asset_code || "");
+    const selected = signalId && signalId === String(selectedSignalId || "");
+    const stateBadge = this.escapeHtml(row.state_badge || row.recommendation_state || "-");
+    const blocked = this.escapeHtml(row.blocked_reason || "");
+    const quality = Boolean(row.quality_degraded);
+    let breakdown = {};
+    try {
+      breakdown = row.probability_reason_breakdown_json ? JSON.parse(row.probability_reason_breakdown_json) : {};
+    } catch (e) {
+      breakdown = {};
+    }
+    const dataState = this.escapeHtml(String(breakdown.data_state || ""));
+    const primaryMetricValue = Number(row.primary_metric_value ?? 0).toFixed(3);
+    const metricLine = row.strategy_key === "SCALP"
+      ? `호/악 ${Number(row.good_news_probability ?? 0).toFixed(3)} / ${Number(row.bad_news_probability ?? 0).toFixed(3)}`
+      : `결합 ${Number(row.combined_confidence ?? 0).toFixed(3)} · 주간 ${Number(row.weekly_context_score ?? 0).toFixed(3)}`;
+    return `
+      <button type="button" class="assistant-signal-row ${selected ? "selected" : ""}" data-signal-id="${signalId}" data-asset-code="${assetCode}">
+        <div class="assistant-signal-row-top">
+          <span class="name">${this.escapeHtml(row.asset_name || row.asset_code || "-")}</span>
+          <span class="action">${this.escapeHtml(row.action || "WATCH")}</span>
+        </div>
+        <div class="assistant-signal-row-badges">
+          <span class="badge">${this.escapeHtml(row.strategy_key || "-")}</span>
+          <span class="badge">${stateBadge}</span>
+          ${quality ? '<span class="badge">품질주의</span>' : ""}
+          ${Boolean(row.dedup_applied) ? '<span class="badge">중복억제</span>' : ""}
+          ${dataState ? `<span class="badge">상태 ${dataState}</span>` : ""}
+        </div>
+        <div class="assistant-signal-row-desc">${this.escapeHtml(row.panel_purpose || row.state_reason || "-")}</div>
+        <div class="assistant-signal-row-desc">${this.escapeHtml(row.primary_metric_label || "핵심지표")} ${primaryMetricValue} · ${this.escapeHtml(metricLine)}</div>
+        ${blocked ? `<div class="assistant-signal-row-desc warn">차단사유: ${blocked}</div>` : ""}
+      </button>
+    `;
+  },
+
+  renderAssistantRiskPanel(risk, locks) {
+    if (!risk) {
+      return '<div class="empty-box">리스크/자금관리 데이터 없음</div>';
+    }
+    const summaryLines = [
+      `기준자금 ${Number(risk.reference_capital_basis || risk.capital_total || 0).toLocaleString()} (참고용)`,
+      `1회 진입 ${Number(risk.recommended_entry_ratio_pct || 0).toFixed(1)}% / 약 ${Number(risk.recommended_entry_amount || 0).toLocaleString()}`,
+      `분할매수 비중 ${this.escapeHtml(JSON.stringify(risk.recommended_buy_split_ratios || []))}`,
+      `익절 ${Number(risk.take_profit_pct || 0)}% / 손절 ${Number(risk.stop_loss_pct || 0)}%`,
+      `재분석 락 ${Number(risk.reanalysis_lock_minutes || 0)}분`,
+      `종목당 최대 ${(Number(risk.max_position_ratio_per_asset || 0) * 100).toFixed(1)}%`,
+      `국가당 최대 ${(Number(risk.max_country_exposure_ratio || 0) * 100).toFixed(1)}% / 테마당 최대 ${(Number(risk.max_theme_exposure_ratio || 0) * 100).toFixed(1)}%`
+    ];
+    const warnings = [
+      ...(Array.isArray(risk.portfolio_diversification_warnings) ? risk.portfolio_diversification_warnings : []),
+      ...(Array.isArray(risk.position_limit_warning_assets) ? risk.position_limit_warning_assets.map((v) => `비중경고 ${v}`) : []),
+      ...(Array.isArray(risk.data_quality_degraded_assets) ? risk.data_quality_degraded_assets.map((v) => `품질저하 ${v}`) : [])
+    ];
+
+    const lockLines = (Array.isArray(locks) ? locks : []).slice(0, 6).map((row) => {
+      const asset = this.escapeHtml(row.asset_name || row.asset_code || "-");
+      const reason = this.escapeHtml(row.lock_reason || "-");
+      const until = row.lock_until ? new Date(row.lock_until).toLocaleString() : "미정";
+      return `<div class="assistant-sub-row">${asset} · ${reason} · ${until}</div>`;
+    });
+
+    return `
+      <div class="assistant-sub-section">
+        ${summaryLines.map((line) => `<div class="assistant-sub-row">${this.escapeHtml(line)}</div>`).join("")}
+      </div>
+      <div class="assistant-sub-section">
+        <div class="assistant-sub-title">경고/차단 신호</div>
+        ${warnings.length
+          ? warnings.slice(0, 8).map((line) => `<div class="assistant-sub-row warn">${this.escapeHtml(line)}</div>`).join("")
+          : '<div class="assistant-sub-row">현재 주요 경고 없음</div>'}
+      </div>
+      <div class="assistant-sub-section">
+        <div class="assistant-sub-title">BUY_LOCK / 재분석 대기</div>
+        ${lockLines.length ? lockLines.join("") : '<div class="assistant-sub-row">현재 BUY_LOCK 없음</div>'}
+      </div>
+    `;
+  },
+
+  renderAssistantDetailLoading(signalId) {
+    $("#assistant-detail-meta").text(`상세 로딩 중 · signal_id=${signalId || ""}`);
+    $("#assistant-detail-panel").html('<div class="empty-box">종목 상세(뉴스/가격/리스크 근거)를 불러오는 중...</div>');
+  },
+
+  renderAssistantDetailError(err) {
+    const msg = this.escapeHtml(err?.message || err?.code || "상세 조회 실패");
+    $("#assistant-detail-meta").text(`상세 오류: ${msg}`);
+    $("#assistant-detail-panel").html(`<div class="empty-box">${msg}</div>`);
+  },
+
+  renderAssistantDetail(detail, dashboard, traceId = "") {
+    if (!detail) {
+      $("#assistant-detail-meta").text("종목 상세 대기");
+      $("#assistant-detail-panel").html('<div class="empty-box">관심종목 또는 전략 후보를 선택하면 상세 근거를 표시합니다.</div>');
+      return;
+    }
+    let breakdown = {};
+    try {
+      breakdown = detail.probability_reason_breakdown_json ? JSON.parse(detail.probability_reason_breakdown_json) : {};
+    } catch (e) {
+      breakdown = {};
+    }
+    let ragRefs = [];
+    try {
+      ragRefs = detail.rag_context_refs_json ? JSON.parse(detail.rag_context_refs_json) : [];
+    } catch (e) {
+      ragRefs = [];
+    }
+    const assistant = detail.assistant_rag || {};
+    const newsEvidence = Array.isArray(detail.news_evidence) ? detail.news_evidence : [];
+    const priceEvidence = Array.isArray(detail.price_evidence) ? detail.price_evidence : [];
+    const riskEvidence = Array.isArray(detail.risk_evidence) ? detail.risk_evidence : [];
+    const missing = Array.isArray(detail.missing_requirements) ? detail.missing_requirements : [];
+    const changes = Array.isArray(detail.change_conditions) ? detail.change_conditions : [];
+    const risk = dashboard?.risk_panel || {};
+    const dataState = this.escapeHtml(String(breakdown.data_state || ""));
+    const uncertainty = Number(breakdown.uncertainty_score ?? 0);
+    const helper = [
+      `권장 1회 진입 ${Number(risk.recommended_entry_ratio_pct || 0).toFixed(1)}%`,
+      `분할매수 ${this.escapeHtml(JSON.stringify(risk.recommended_buy_split_ratios || []))}`,
+      `익절 ${Number(risk.take_profit_pct || 0)}%`,
+      `손절 ${Number(risk.stop_loss_pct || 0)}%`,
+      `재분석 락 ${Number(risk.reanalysis_lock_minutes || 0)}분`
+    ];
+
+    $("#assistant-detail-meta").text(
+      `${this.escapeHtml(detail.asset_name || detail.asset_code || "-")} · ${this.escapeHtml(detail.action || "WATCH")} · trace_id=${this.escapeHtml(traceId || "")}`
+    );
+    $("#assistant-detail-panel").html(`
+      <div class="assistant-detail-grid">
+        <section class="assistant-detail-card">
+          <h4>추천/확률 요약</h4>
+          <div class="assistant-detail-line">결정: ${this.escapeHtml(detail.action || "WATCH")} / 결합신뢰 ${Number(detail.combined_confidence ?? 0).toFixed(3)}</div>
+          <div class="assistant-detail-line">호재 ${Number(detail.good_news_probability ?? 0).toFixed(3)} / 악재 ${Number(detail.bad_news_probability ?? 0).toFixed(3)} / 불확실성 ${uncertainty.toFixed(3)}</div>
+          <div class="assistant-detail-line">상태: ${dataState || "-"} ${detail.blocked_reason ? `· 차단사유 ${this.escapeHtml(detail.blocked_reason)}` : ""}</div>
+          <div class="assistant-detail-line">왜 ${this.escapeHtml(detail.action || "WATCH")}인가: ${this.escapeHtml(detail.decision_why || detail.explain_text || "-")}</div>
+        </section>
+        <section class="assistant-detail-card">
+          <h4>뉴스 근거</h4>
+          ${newsEvidence.length ? newsEvidence.slice(0, 8).map((line) => `<div class="assistant-detail-line">${this.escapeHtml(line)}</div>`).join("") : '<div class="assistant-detail-line">뉴스 근거 없음</div>'}
+        </section>
+        <section class="assistant-detail-card">
+          <h4>가격 근거</h4>
+          ${priceEvidence.length ? priceEvidence.slice(0, 8).map((line) => `<div class="assistant-detail-line">${this.escapeHtml(line)}</div>`).join("") : '<div class="assistant-detail-line">가격 근거 없음</div>'}
+        </section>
+        <section class="assistant-detail-card">
+          <h4>리스크 근거</h4>
+          ${riskEvidence.length ? riskEvidence.slice(0, 8).map((line) => `<div class="assistant-detail-line">${this.escapeHtml(line)}</div>`).join("") : '<div class="assistant-detail-line">리스크 근거 없음</div>'}
+        </section>
+        <section class="assistant-detail-card">
+          <h4>무엇이 부족한지 / 바뀔 조건</h4>
+          <div class="assistant-detail-line">부족요건: ${this.escapeHtml(missing.join(" / ") || "-")}</div>
+          <div class="assistant-detail-line">변경조건: ${this.escapeHtml(changes.join(" / ") || "-")}</div>
+        </section>
+        <section class="assistant-detail-card">
+          <h4>참고용 진입/익절/손절 (실주문 아님)</h4>
+          ${helper.map((line) => `<div class="assistant-detail-line">${line}</div>`).join("")}
+        </section>
+        <section class="assistant-detail-card">
+          <h4>RAG 보조설명</h4>
+          <div class="assistant-detail-line">source=${this.escapeHtml(assistant.source || "-")} · fallback=${Boolean(assistant.fallback_applied)} · applied=${Boolean(assistant.applied)}</div>
+          <div class="assistant-detail-line">${this.escapeHtml(assistant.summary || "비활성/없음")}</div>
+          <div class="assistant-detail-line">주의: ${this.escapeHtml((assistant.caution_bullets || []).join(" / ") || "-")}</div>
+          <div class="assistant-detail-line">근거요약: ${this.escapeHtml((assistant.evidence_bullets || []).join(" / ") || "-")}</div>
+        </section>
+        <section class="assistant-detail-card">
+          <h4>trace/근거 링크</h4>
+          <div class="assistant-detail-line">trace_id: ${this.escapeHtml(traceId || "")}</div>
+          <div class="assistant-detail-line">rag_context_refs: ${Array.isArray(ragRefs) ? ragRefs.length : 0}건</div>
+          <div class="assistant-detail-line">AI 비서 질의응답 영역은 다음 차수에서 연결 예정(현재는 근거 기반 요약만 제공)</div>
+        </section>
+      </div>
+    `);
   },
 
   renderSignalDetailModal(detail) {
@@ -645,6 +1005,7 @@ window.ui = {
     const signalAudit = diag.signalAudit?.data || {};
     const signalAlignment = diag.signalAlignment?.data || {};
     const signalConfidence = diag.signalConfidence?.data || {};
+    const ragSummary = signalConfidence.assistant_rag_summary || {};
     const toggles = Array.isArray(diag.featureToggles?.data) ? diag.featureToggles.data : [];
 
     $("#admin-meta").text(`생성 ${new Date().toLocaleString()} · trace_id=${diag.marketSummary?.trace_id || ""}`);
@@ -717,6 +1078,7 @@ window.ui = {
       <div class="admin-kv">저신뢰 시그널 ${Number(signalConfidence.low_confidence_count || 0)}건</div>
       <div class="admin-kv">전략별 액션 분포 ${this.escapeHtml(JSON.stringify(signalByStrategy))}</div>
       <div class="admin-kv">중복노출 통계 ${this.escapeHtml(JSON.stringify(duplicateSignalStats))}</div>
+      <div class="admin-kv">RAG 성공률 ${this.pct(ragSummary.success_rate)} / fallback ${Number(ragSummary.fallback_count || 0)} / timeout ${Number(ragSummary.timeout_count || 0)} / 평균지연 ${this.num(ragSummary.avg_latency_ms, 2)}ms</div>
       ${signalItems.map((row) => `
         <div class="admin-row">
           <span>${this.escapeHtml(row.asset_code || "-")}</span>
@@ -727,13 +1089,28 @@ window.ui = {
     `);
 
     $("#admin-toggles").html(toggles.length
-      ? toggles.map((row) => `
-          <div class="admin-row">
-            <span>${this.escapeHtml(row.feature_key || "-")} (${this.escapeHtml(row.scope_type || "GLOBAL")}:${this.escapeHtml(row.scope_value || "*")})</span>
-            <span>${row.enabled ? "ON" : "OFF"}</span>
+      ? toggles.map((row) => {
+        const featureKey = String(row.feature_key || "").toUpperCase();
+        const description = store.featureToggleDescriptions?.[featureKey] || "설명 미등록";
+        const scopeText = `${row.scope_type || "GLOBAL"}:${row.scope_value || "*"}`;
+        const risky = featureKey === "LIVE_TRADE" || featureKey === "AUTO_ORDER_FULLY_AUTOMATED";
+        const reason = row.reason || "-";
+        const updatedBy = row.updated_by || "-";
+        const updatedAt = row.updated_at ? new Date(row.updated_at).toLocaleString() : "-";
+        return `
+          <div class="admin-toggle-item ${risky ? "danger" : ""}">
+            <div class="admin-toggle-head">
+              <span class="admin-toggle-key">${this.escapeHtml(featureKey)}</span>
+              <span class="admin-toggle-state ${row.enabled ? "on" : "off"}">${row.enabled ? "ON" : "OFF"}</span>
+            </div>
+            <div class="admin-toggle-desc">${this.escapeHtml(description)}</div>
+            <div class="admin-toggle-meta">범위 ${this.escapeHtml(scopeText)} · 변경자 ${this.escapeHtml(updatedBy)} · 변경시각 ${this.escapeHtml(updatedAt)}</div>
+            <div class="admin-toggle-meta">사유 ${this.escapeHtml(reason)}</div>
+            ${risky ? '<div class="admin-toggle-warning">위험 토글입니다. 운영 승인 절차 없이 활성화하지 마세요.</div>' : ""}
             <button class="toggle-patch-btn" type="button" data-id="${row.id}" data-enabled="${!row.enabled}">${row.enabled ? "OFF로 변경" : "ON으로 변경"}</button>
           </div>
-        `).join("")
+        `;
+      }).join("")
       : '<div class="empty-box">등록된 기능 토글이 없습니다.</div>');
   },
 
@@ -746,14 +1123,40 @@ window.ui = {
     const assistant = data.assistant_summary || {};
     const assistantHighlights = Array.isArray(assistant.highlights) ? assistant.highlights : [];
     const assistantCautions = Array.isArray(assistant.cautions) ? assistant.cautions : [];
+    const counts = data.counts || {};
+    const marketCollection = data.market_collection || {};
+    const signals = data.signals || {};
+    const qualityRows = Array.isArray(marketCollection.quality_snapshots) ? marketCollection.quality_snapshots.slice(0, 5) : [];
+    const gapRows = Array.isArray(marketCollection.gap_events) ? marketCollection.gap_events.slice(0, 5) : [];
+    const providerRows = Array.isArray(marketCollection.provider_audits) ? marketCollection.provider_audits.slice(0, 5) : [];
+    const strategyRuns = Array.isArray(signals.strategy_runs) ? signals.strategy_runs.slice(0, 5) : [];
+    const signalAudits = Array.isArray(signals.signal_audits) ? signals.signal_audits.slice(0, 5) : [];
+    const assistantAudits = Array.isArray(signals.assistant_rag_audits) ? signals.assistant_rag_audits.slice(0, 5) : [];
     $("#admin-trace-detail").html(`
       <div class="admin-kv">trace_id ${this.escapeHtml(data.trace_id || "")}</div>
-      <div class="admin-kv">counts ${this.escapeHtml(JSON.stringify(data.counts || {}))}</div>
+      <div class="admin-kv">counts ${this.escapeHtml(JSON.stringify(counts))}</div>
       <div class="admin-kv">feature_toggles ${Array.isArray(data.feature_toggles) ? data.feature_toggles.length : 0}건</div>
       <div class="admin-kv">assistant_summary ${this.escapeHtml(assistant.summary || "없음")}</div>
-      <div class="admin-kv">assistant_source ${this.escapeHtml(assistant.source || "-")} / fallback=${Boolean(assistant.fallback_applied)}</div>
+      <div class="admin-kv">assistant_source ${this.escapeHtml(assistant.source || "-")} / fallback=${Boolean(assistant.fallback_applied)} / latency=${this.num(assistant.latency_ms_total, 0)}ms</div>
       <div class="admin-kv">assistant_highlights ${this.escapeHtml(assistantHighlights.join(" | ") || "-")}</div>
       <div class="admin-kv">assistant_cautions ${this.escapeHtml(assistantCautions.join(" | ") || "-")}</div>
+      <div class="admin-trace-sections">
+        <section>
+          <h4>수집 품질/Provider</h4>
+          ${qualityRows.map((row) => `<div class="admin-row"><span>${this.escapeHtml(row.provider || "-")} ${this.escapeHtml(row.country || "-")}</span><span>품질 ${this.num(row.quality_score, 2)}</span><span>${this.escapeHtml(row.snapshot_time_utc || "-")}</span></div>`).join("") || '<div class="empty-box">품질 스냅샷 없음</div>'}
+          ${gapRows.map((row) => `<div class="admin-row"><span>[${this.escapeHtml(row.severity || "-")}] ${this.escapeHtml(row.event_type || "-")}</span><span>${this.escapeHtml(row.asset_code || "-")}</span><span>${this.escapeHtml(row.event_time_utc || "-")}</span></div>`).join("") || ""}
+          ${providerRows.map((row) => `<div class="admin-row"><span>${this.escapeHtml(row.provider || "-")} / ${this.escapeHtml(row.api_name || "-")}</span><span>${row.success ? "OK" : "FAIL"}</span><span>${this.num(row.latency_ms, 0)}ms</span></div>`).join("") || ""}
+        </section>
+        <section>
+          <h4>시그널/전략 실행</h4>
+          ${strategyRuns.map((row) => `<div class="admin-row"><span>${this.escapeHtml(row.run_type || "-")} / ${this.escapeHtml(row.status || "-")}</span><span>처리 ${Number(row.processed_count || 0)}</span><span>생성 ${Number(row.created_signal_count || 0)}</span></div>`).join("") || '<div class="empty-box">전략 실행 로그 없음</div>'}
+          ${signalAudits.map((row) => `<div class="admin-row"><span>${this.escapeHtml(row.asset_code || "-")} / ${this.escapeHtml(row.engine_type || "-")}</span><span>${this.escapeHtml(row.blocked_reason || "-")}</span><span>${this.escapeHtml(row.signal_id || "-")}</span></div>`).join("") || ""}
+        </section>
+        <section>
+          <h4>RAG 감사 로그</h4>
+          ${assistantAudits.map((row) => `<div class="admin-row"><span>${this.escapeHtml(row.request_scope || "-")} / ${this.escapeHtml(row.request_key || "-")}</span><span>fallback=${Boolean(row.fallback_applied)}</span><span>${this.escapeHtml(row.error_code || "-")} · ${this.num(row.latency_ms_total, 0)}ms</span></div>`).join("") || '<div class="empty-box">RAG 감사 로그 없음</div>'}
+        </section>
+      </div>
     `);
   },
 

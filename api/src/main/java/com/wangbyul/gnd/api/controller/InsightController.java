@@ -9,6 +9,7 @@ import com.wangbyul.gnd.api.dto.StockSignalDto;
 import com.wangbyul.gnd.api.dto.TradingSignalViewDto;
 import com.wangbyul.gnd.api.dto.WeeklyContextDto;
 import com.wangbyul.gnd.api.service.StockSignalService;
+import com.wangbyul.gnd.api.service.assistant.AssistantDashboardService;
 import com.wangbyul.gnd.api.service.signal.BacktestComparisonService;
 import com.wangbyul.gnd.api.service.signal.TradingSignalEngineService;
 import com.wangbyul.gnd.core.dto.ApiEnvelope;
@@ -48,18 +49,21 @@ public class InsightController {
     private final StockSignalService stockSignalService;
     private final TradingSignalEngineService tradingSignalEngineService;
     private final BacktestComparisonService backtestComparisonService;
+    private final AssistantDashboardService assistantDashboardService;
 
     public InsightController(
             InsightLogRepository insightLogRepository,
             NewsRepository newsRepository,
             StockSignalService stockSignalService,
             TradingSignalEngineService tradingSignalEngineService,
-            BacktestComparisonService backtestComparisonService) {
+            BacktestComparisonService backtestComparisonService,
+            AssistantDashboardService assistantDashboardService) {
         this.insightLogRepository = insightLogRepository;
         this.newsRepository = newsRepository;
         this.stockSignalService = stockSignalService;
         this.tradingSignalEngineService = tradingSignalEngineService;
         this.backtestComparisonService = backtestComparisonService;
+        this.assistantDashboardService = assistantDashboardService;
     }
 
     @GetMapping("/insight")
@@ -262,6 +266,26 @@ public class InsightController {
         return ApiEnvelope.<SignalDetailDto>builder()
                 .data(data)
                 .meta(Map.of("signal_id", signalId, "assistant", assistant))
+                .traceId(traceId())
+                .build();
+    }
+
+    /**
+     * AI 비서 화면용 대시보드 집계(뉴스 홈과 별도).
+     */
+    @GetMapping("/insight/assistant/dashboard")
+    public ApiEnvelope<Map<String, Object>> getAssistantDashboard(
+            @RequestParam @NotBlank @Pattern(regexp = "^[A-Z]{2,5}$") String country,
+            @RequestParam(required = false) String theme,
+            @RequestParam(defaultValue = "8") @Min(1) @Max(20) int limit) {
+        Map<String, Object> data = assistantDashboardService.buildDashboard(country, theme, limit);
+        return ApiEnvelope.<Map<String, Object>>builder()
+                .data(data)
+                .meta(Map.of(
+                        "country", country,
+                        "theme", theme == null ? "" : theme,
+                        "limit", limit,
+                        "view", "assistant"))
                 .traceId(traceId())
                 .build();
     }
