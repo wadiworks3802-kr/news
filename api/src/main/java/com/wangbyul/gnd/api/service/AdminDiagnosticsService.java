@@ -437,8 +437,24 @@ public class AdminDiagnosticsService {
         data.put("minimum_rules", base.get("minimum_rules"));
         data.put("assets_by_layer", base.getOrDefault("assets_by_layer", Map.of()));
         data.put("assets_by_theme_code", base.getOrDefault("assets_by_theme_code", Map.of()));
+        data.put("assets_by_strategy_scope", base.getOrDefault("assets_by_strategy_scope", Map.of()));
         data.put("priority_theme_assets", base.getOrDefault("priority_theme_assets", 0));
         data.put("stale_quote_assets", base.getOrDefault("stale_quote_assets", 0));
+        data.put("active_panel_cooldown_assets", base.getOrDefault("active_panel_cooldown_assets", 0));
+        data.put("repeated_panel_exposure_assets", base.getOrDefault("repeated_panel_exposure_assets", 0));
+        List<String> warnings = new ArrayList<>();
+        if (concentration.compareTo(BigDecimal.valueOf(0.45d)) > 0) {
+            warnings.add("동일 종목군 편중이 높습니다.");
+        }
+        Object repeatedExposureObj = base.get("repeated_panel_exposure_assets");
+        if (repeatedExposureObj instanceof Number n && n.longValue() > 0L) {
+            warnings.add("최근 24시간 기준 반복 노출 자산이 감지되었습니다.");
+        }
+        Object cooldownObj = base.get("active_panel_cooldown_assets");
+        if (cooldownObj instanceof Number n && n.longValue() > 0L) {
+            warnings.add("패널 노출 쿨다운 상태 자산이 존재합니다.");
+        }
+        data.put("warnings", warnings);
         return data;
     }
 

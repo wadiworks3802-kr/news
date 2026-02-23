@@ -46,6 +46,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
+import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.beans.factory.annotation.Value;
@@ -59,6 +61,7 @@ import org.springframework.transaction.annotation.Transactional;
  * 현재날짜 : 2026년 02월 20일
  */
 @Service
+@Slf4j
 public class TradingSignalEngineService {
 
     private final AssetUniverseRepository assetUniverseRepository;
@@ -93,6 +96,9 @@ public class TradingSignalEngineService {
 
     @Value("${app.universe.panel-candidate-fetch-multiplier:8}")
     private int panelCandidateFetchMultiplier;
+
+    @Value("${app.universe.panel-max-exposure-per-24h:3}")
+    private int panelMaxExposurePer24h;
 
     @Value("${app.universe.priority-themes:RESOURCE,DEFENSE,SPACE,AI,SEMICONDUCTOR,ROBOTICS,ENERGY}")
     private List<String> priorityThemes;
@@ -216,11 +222,13 @@ public class TradingSignalEngineService {
         return systemFeatureToggleService.isFeatureEnabled(engineKey, country, theme, null);
     }
 
+    @Transactional
     public List<TradingSignalViewDto> getScalpSignals(String country, String theme, int limit) {
         ensureRecentSignals(country, theme, Math.max(limit, 20), StrategyRunType.SCALP);
         return queryPanelSignals(country, theme, scalpStrategyService.allowedActions(), limit, PanelType.SCALP, scalpStrategyService.signalWindow());
     }
 
+    @Transactional
     public List<TradingSignalViewDto> getSwingSignals(String country, String theme, int limit) {
         ensureRecentSignals(country, theme, Math.max(limit, 20), StrategyRunType.SWING);
         return queryPanelSignals(country, theme, swingStrategyService.allowedActions(), limit, PanelType.SWING, swingStrategyService.signalWindow());
@@ -241,6 +249,7 @@ public class TradingSignalEngineService {
         return toViewDto(signal, asset, PanelSelectionMeta.forPosition(eval));
     }
 
+    @Transactional
     public List<TradingSignalViewDto> getDiscoverySignals(String country, String theme, int limit) {
         ensureRecentSignals(country, theme, Math.max(limit, 30), StrategyRunType.DISCOVERY);
         return queryPanelSignals(country, theme, discoveryStrategyService.allowedActions(), limit, PanelType.DISCOVERY, discoveryStrategyService.signalWindow());
@@ -535,6 +544,8 @@ public class TradingSignalEngineService {
         int fetchSize = Math.max(safeLimit * Math.max(2, panelCandidateFetchMultiplier), safeLimit + 20);
         String normalizedTheme = normalizeThemeCode(theme);
         String normalizedCountry = country == null ? "" : country.trim();
+        OffsetDateTime selectedAt = OffsetDateTime.now();
+        boolean explicitThemeFilter = normalizedTheme != null && !normalizedTheme.isBlank();
 
         List<TradingSignalEntity> rows = (theme == null || theme.isBlank())
                 ? tradingSignalRepository.findByCountryAndSignalWindowAndActionInOrderByGeneratedAtDesc(
@@ -571,13 +582,27 @@ public class TradingSignalEngineService {
             latestByAsset.put(row.getAssetCode(), row);
         }
 
+        int scopeFilteredCount = 0;
+        int cooldownFilteredCount = 0;
+        int exposureCapFilteredCount = 0;
+        int themeFilteredCount = 0;
         List<PanelCandidate> candidates = latestByAsset.values().stream()
                 .map(signal -> {
                     AssetUniverseEntity asset = assetMap.get(signal.getAssetCode());
                     if (asset == null) {
                         return null;
                     }
+                    normalizePanelExposureWindowState(asset, selectedAt);
                     if (!matchesThemeFilter(theme, signal, asset)) {
+                        return null;
+                    }
+                    if (!matchesPanelStrategyScope(panelType, asset)) {
+                        return null;
+                    }
+                    if (hasPanelExposureCooldown(asset, selectedAt)) {
+                        return null;
+                    }
+                    if (isPanelExposureLimitExceeded(asset)) {
                         return null;
                     }
                     return toPanelCandidate(panelType, signal, asset, normalizedTheme);
@@ -586,6 +611,29 @@ public class TradingSignalEngineService {
                 .sorted(Comparator.comparing(PanelCandidate::panelScore).reversed()
                         .thenComparing(c -> c.signal().getGeneratedAt(), Comparator.nullsLast(Comparator.reverseOrder())))
                 .toList();
+
+        for (TradingSignalEntity signal : latestByAsset.values()) {
+            AssetUniverseEntity asset = assetMap.get(signal.getAssetCode());
+            if (asset == null) {
+                continue;
+            }
+            normalizePanelExposureWindowState(asset, selectedAt);
+            if (!matchesThemeFilter(theme, signal, asset)) {
+                themeFilteredCount++;
+                continue;
+            }
+            if (!matchesPanelStrategyScope(panelType, asset)) {
+                scopeFilteredCount++;
+                continue;
+            }
+            if (hasPanelExposureCooldown(asset, selectedAt)) {
+                cooldownFilteredCount++;
+                continue;
+            }
+            if (isPanelExposureLimitExceeded(asset)) {
+                exposureCapFilteredCount++;
+            }
+        }
 
         List<PanelCandidate> selectedCandidates = new ArrayList<>();
         Set<String> selectedAssetCodes = new HashSet<>();
@@ -610,7 +658,8 @@ public class TradingSignalEngineService {
                 dedupApplied = true;
                 continue;
             }
-            if (themeCount.getOrDefault(themeCode, 0) >= Math.max(1, panelMaxSameTheme) && isPriorityTheme(themeCode)) {
+            if (!explicitThemeFilter
+                    && themeCount.getOrDefault(themeCode, 0) >= Math.max(1, panelMaxSameTheme)) {
                 dedupApplied = true;
                 continue;
             }
@@ -621,7 +670,7 @@ public class TradingSignalEngineService {
 
         // 너무 엄격한 중복억제로 빈 화면 방지: 필터 완화 fallback
         if (selectedCandidates.isEmpty()) {
-            return latestByAsset.values().stream()
+            List<TradingSignalViewDto> fallback = latestByAsset.values().stream()
                     .filter(signal -> {
                         AssetUniverseEntity asset = assetMap.get(signal.getAssetCode());
                         return asset != null && matchesThemeFilter(theme, signal, asset);
@@ -630,7 +679,33 @@ public class TradingSignalEngineService {
                     .map(signal -> toViewDto(signal, assetMap.get(signal.getAssetCode()),
                             PanelSelectionMeta.fallback(panelType, normalizedTheme)))
                     .toList();
+            logPanelSelectionWarning(
+                    panelType,
+                    normalizedCountry,
+                    normalizedTheme,
+                    "fallback-selected",
+                    latestByAsset.size(),
+                    candidates.size(),
+                    fallback.size(),
+                    scopeFilteredCount,
+                    cooldownFilteredCount,
+                    exposureCapFilteredCount,
+                    themeFilteredCount,
+                    duplicateSignalRowsFound);
+            return fallback;
         }
+
+        recordPanelExposure(selectedCandidates, selectedAt);
+        logPanelSelectionDuplicatesIfNeeded(
+                panelType,
+                normalizedCountry,
+                normalizedTheme,
+                selectedCandidates,
+                scopeFilteredCount,
+                cooldownFilteredCount,
+                exposureCapFilteredCount,
+                themeFilteredCount,
+                duplicateSignalRowsFound);
 
         boolean finalDedupApplied = dedupApplied;
         return selectedCandidates.stream()
@@ -683,6 +758,10 @@ public class TradingSignalEngineService {
         reason.append(",theme_code=").append(safeString(asset.getThemeCode(), "N/A"));
         reason.append(",priority_theme=").append(isPriorityTheme(asset.getThemeCode()));
         reason.append(",trade_enabled=").append(Boolean.TRUE.equals(asset.getIsTradeEnabled()));
+        reason.append(",strategy_scope=").append(safeString(asset.getStrategyScope(), "ALL"));
+        reason.append(",panel_exposure_24h=").append(asset.getPanelExposureCount24h() == null ? 0 : asset.getPanelExposureCount24h());
+        reason.append(",panel_cooldown_mins=").append(asset.getDupExposureCooldownMinutes() == null ? 0 : asset.getDupExposureCooldownMinutes());
+        reason.append(",panel_cooldown_active=").append(hasPanelExposureCooldown(asset, OffsetDateTime.now()));
         reason.append(",stale_penalty=").append(scale(stalePenalty));
         reason.append(",quality_penalty=").append(scale(qualityPenalty));
         if (asset.getSelectionReason() != null && !asset.getSelectionReason().isBlank()) {
@@ -808,6 +887,12 @@ public class TradingSignalEngineService {
                 .diversityScore(panelMeta == null ? null : panelMeta.diversityScore())
                 .coreThemeFilterApplied(panelMeta == null ? null : panelMeta.coreThemeFilterApplied())
                 .themeCode(panelMeta == null ? null : panelMeta.themeCode())
+                .countryCode(asset == null ? null : safeString(asset.getCountryCode(), asset.getCountry()))
+                .strategyScope(asset == null ? null : safeString(asset.getStrategyScope(), "ALL"))
+                .panelExposureCount24h(asset == null ? null : (asset.getPanelExposureCount24h() == null ? 0 : asset.getPanelExposureCount24h()))
+                .dupExposureCooldownMinutes(asset == null ? null : (asset.getDupExposureCooldownMinutes() == null ? 0 : asset.getDupExposureCooldownMinutes()))
+                .lastPanelExposedAt(asset == null ? null : asset.getLastPanelExposedAt())
+                .panelCooldownActive(asset == null ? null : hasPanelExposureCooldown(asset, OffsetDateTime.now()))
                 .strategyKey(panelMeta == null ? null : panelMeta.strategyKey())
                 .panelPurpose(panelMeta == null ? null : panelMeta.panelPurpose())
                 .primaryMetricLabel(panelMeta == null ? null : panelMeta.primaryMetricLabel())
@@ -837,6 +922,153 @@ public class TradingSignalEngineService {
             case DISCOVERY -> "6m";
             default -> "1d";
         };
+    }
+
+    private boolean matchesPanelStrategyScope(PanelType panelType, AssetUniverseEntity asset) {
+        if (asset == null) {
+            return false;
+        }
+        String scope = safeString(asset.getStrategyScope(), "ALL").toUpperCase(Locale.ROOT);
+        if ("ALL".equals(scope) || scope.isBlank()) {
+            return true;
+        }
+        return switch (panelType) {
+            case SCALP -> Set.of("SCALP", "SCALP_SWING", "ALL").contains(scope);
+            case SWING -> Set.of("SWING", "SCALP_SWING", "ALL").contains(scope);
+            case DISCOVERY -> Set.of("DISCOVERY", "ALL").contains(scope);
+            case POSITION -> true;
+        };
+    }
+
+    private void normalizePanelExposureWindowState(AssetUniverseEntity asset, OffsetDateTime now) {
+        if (asset == null) {
+            return;
+        }
+        if (asset.getPanelExposureCount24h() == null) {
+            asset.setPanelExposureCount24h(0);
+        }
+        OffsetDateTime last = asset.getLastPanelExposedAt();
+        if (last != null && last.isBefore(now.minusHours(24))) {
+            asset.setPanelExposureCount24h(0);
+        }
+    }
+
+    private boolean hasPanelExposureCooldown(AssetUniverseEntity asset, OffsetDateTime now) {
+        if (asset == null || asset.getLastPanelExposedAt() == null) {
+            return false;
+        }
+        int cooldownMinutes = asset.getDupExposureCooldownMinutes() == null ? 0 : Math.max(0, asset.getDupExposureCooldownMinutes());
+        if (cooldownMinutes <= 0) {
+            return false;
+        }
+        return asset.getLastPanelExposedAt().isAfter(now.minusMinutes(cooldownMinutes));
+    }
+
+    private boolean isPanelExposureLimitExceeded(AssetUniverseEntity asset) {
+        if (asset == null) {
+            return false;
+        }
+        int limit = Math.max(1, panelMaxExposurePer24h);
+        int count = asset.getPanelExposureCount24h() == null ? 0 : Math.max(0, asset.getPanelExposureCount24h());
+        return count >= limit;
+    }
+
+    private void recordPanelExposure(List<PanelCandidate> selectedCandidates, OffsetDateTime selectedAt) {
+        if (selectedCandidates == null || selectedCandidates.isEmpty()) {
+            return;
+        }
+        List<AssetUniverseEntity> touched = selectedCandidates.stream()
+                .map(PanelCandidate::asset)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (touched.isEmpty()) {
+            return;
+        }
+        for (AssetUniverseEntity asset : touched) {
+            normalizePanelExposureWindowState(asset, selectedAt);
+            int nextCount = (asset.getPanelExposureCount24h() == null ? 0 : asset.getPanelExposureCount24h()) + 1;
+            asset.setPanelExposureCount24h(nextCount);
+            asset.setLastPanelExposedAt(selectedAt);
+        }
+        assetUniverseRepository.saveAll(touched);
+    }
+
+    private void logPanelSelectionDuplicatesIfNeeded(
+            PanelType panelType,
+            String country,
+            String normalizedTheme,
+            List<PanelCandidate> selectedCandidates,
+            int scopeFilteredCount,
+            int cooldownFilteredCount,
+            int exposureCapFilteredCount,
+            int themeFilteredCount,
+            boolean duplicateSignalRowsFound) {
+        if (selectedCandidates == null || selectedCandidates.isEmpty()) {
+            return;
+        }
+        Map<String, Long> familyCounts = selectedCandidates.stream()
+                .map(candidate -> tickerFamily(candidate.signal().getAssetCode()))
+                .collect(java.util.stream.Collectors.groupingBy(v -> v, Collectors.counting()));
+        Map<String, Long> themeCounts = selectedCandidates.stream()
+                .map(candidate -> safeString(candidate.asset() == null ? null : candidate.asset().getThemeCode(), "N/A"))
+                .collect(java.util.stream.Collectors.groupingBy(v -> v, Collectors.counting()));
+        long maxFamily = familyCounts.values().stream().mapToLong(Long::longValue).max().orElse(0L);
+        long maxTheme = themeCounts.values().stream().mapToLong(Long::longValue).max().orElse(0L);
+        boolean warning = duplicateSignalRowsFound
+                || scopeFilteredCount > 0
+                || cooldownFilteredCount > 0
+                || exposureCapFilteredCount > 0
+                || maxFamily > Math.max(1, panelMaxSameFamily)
+                || (normalizedTheme == null || normalizedTheme.isBlank())
+                        && maxTheme > Math.max(1, panelMaxSameTheme);
+        if (!warning) {
+            return;
+        }
+        log.warn(
+                "panel-selection-dedup panel={} country={} theme={} selected={} duplicate_signal_rows={} scope_filtered={} cooldown_filtered={} exposure_cap_filtered={} theme_filtered={} max_family={} max_theme={} trace_id={}",
+                panelType.name(),
+                country,
+                safeString(normalizedTheme, "ALL"),
+                selectedCandidates.size(),
+                duplicateSignalRowsFound,
+                scopeFilteredCount,
+                cooldownFilteredCount,
+                exposureCapFilteredCount,
+                themeFilteredCount,
+                maxFamily,
+                maxTheme,
+                traceId());
+    }
+
+    private void logPanelSelectionWarning(
+            PanelType panelType,
+            String country,
+            String normalizedTheme,
+            String reason,
+            int latestRows,
+            int candidateRows,
+            int selectedRows,
+            int scopeFilteredCount,
+            int cooldownFilteredCount,
+            int exposureCapFilteredCount,
+            int themeFilteredCount,
+            boolean duplicateSignalRowsFound) {
+        log.warn(
+                "panel-selection-warning panel={} country={} theme={} reason={} latest_rows={} candidates={} selected={} duplicate_signal_rows={} scope_filtered={} cooldown_filtered={} exposure_cap_filtered={} theme_filtered={} trace_id={}",
+                panelType.name(),
+                country,
+                safeString(normalizedTheme, "ALL"),
+                reason,
+                latestRows,
+                candidateRows,
+                selectedRows,
+                duplicateSignalRowsFound,
+                scopeFilteredCount,
+                cooldownFilteredCount,
+                exposureCapFilteredCount,
+                themeFilteredCount,
+                traceId());
     }
 
     private boolean matchesThemeFilter(String theme, TradingSignalEntity signal, AssetUniverseEntity asset) {

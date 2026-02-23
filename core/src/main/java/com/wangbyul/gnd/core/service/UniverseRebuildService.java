@@ -97,6 +97,12 @@ public class UniverseRebuildService {
     @Value("${app.universe.theme-leader-per-priority-theme:2}")
     private int themeLeaderPerPriorityTheme;
 
+    @Value("${app.universe.volatility-lookback-bars:20}")
+    private int volatilityLookbackBars;
+
+    @Value("${app.universe.volatility-max-range-pct:0.20}")
+    private BigDecimal volatilityMaxRangePct;
+
     @Transactional
     public UniverseRebuildResult rebuildUniverse(String triggeredBy) {
         List<AssetUniverseEntity> assets = assetUniverseRepository.findByActiveTrueOrderByUpdatedAtDesc();
@@ -116,6 +122,7 @@ public class UniverseRebuildService {
         }
 
         Map<String, BigDecimal> avgVolumeByAsset = calculateAverageVolumeByAsset(assets);
+        Map<String, BigDecimal> volatilityByAsset = calculateVolatilityByAsset(assets);
         Map<String, Long> exposureCountByAsset = new HashMap<>();
         for (AssetUniverseEntity asset : assets) {
             exposureCountByAsset.put(
@@ -143,6 +150,7 @@ public class UniverseRebuildService {
                     countryAssets,
                     mentionCountByAsset,
                     avgVolumeByAsset,
+                    volatilityByAsset,
                     exposureCountByAsset,
                     latestQualityScoreByScope,
                     country);
@@ -157,8 +165,11 @@ public class UniverseRebuildService {
                     asset.setMarketCapRank(i + 1);
                 }
                 asset.setThemeCode(normalizeThemeCode(asset.getTheme()));
+                asset.setCountryCode(normalizeCountryCode(asset.getCountry()));
                 asset.setIsUserWatch(Boolean.TRUE.equals(asset.getIsWatchlistAsset()) || Boolean.TRUE.equals(asset.getIsUserWatch()));
                 asset.setDupExposureCooldownMinutes(resolveDupExposureCooldownMinutes(rank));
+                asset.setStrategyScope(resolveStrategyScope(rank));
+                normalizePanelExposureWindow(asset, now);
                 asset.setLastQuoteReceivedAt(lastQuoteReceivedAtByAsset.get(asset.getAssetCode()));
                 asset.setLastSignalGeneratedAt(lastSignalGeneratedAtByAsset.get(asset.getAssetCode()));
                 asset.setLastNewsLinkedAt(lastNewsLinkedAtByAsset.get(asset.getAssetCode()));
@@ -184,6 +195,14 @@ public class UniverseRebuildService {
 
             assignUniverseLayers(countryAssets, ranked, selectedCore);
             assignDisplayWeights(countryAssets);
+            Map<String, AssetRank> rankedByAssetCode = ranked.stream()
+                    .collect(Collectors.toMap(r -> r.asset().getAssetCode(), r -> r, (a, b) -> a));
+            for (AssetUniverseEntity asset : countryAssets) {
+                AssetRank rank = rankedByAssetCode.get(asset.getAssetCode());
+                if (rank != null) {
+                    asset.setStrategyScope(resolveStrategyScope(rank));
+                }
+            }
             totalCoreAssets += selectedCore.size();
         }
 
@@ -219,8 +238,10 @@ public class UniverseRebuildService {
                     row.put("asset_code", asset.getAssetCode());
                     row.put("asset_name", asset.getAssetName());
                     row.put("country", asset.getCountry());
+                    row.put("country_code", safeString(asset.getCountryCode(), safeString(asset.getCountry(), "N/A")));
                     row.put("theme", safeString(asset.getTheme(), "N/A"));
                     row.put("theme_code", safeString(asset.getThemeCode(), "N/A"));
+                    row.put("strategy_scope", safeString(asset.getStrategyScope(), "ALL"));
                     row.put("universe_layer", asset.getUniverseLayer() == null ? "N/A" : asset.getUniverseLayer().name());
                     row.put("selection_source",
                             safeString(asset.getSelectionSource() == null ? null : asset.getSelectionSource().name(), "MANUAL"));
@@ -233,6 +254,8 @@ public class UniverseRebuildService {
                     row.put("is_user_watch", Boolean.TRUE.equals(asset.getIsUserWatch()));
                     row.put("dup_exposure_cooldown_minutes",
                             asset.getDupExposureCooldownMinutes() == null ? 0 : asset.getDupExposureCooldownMinutes());
+                    row.put("panel_exposure_count_24h", asset.getPanelExposureCount24h() == null ? 0 : asset.getPanelExposureCount24h());
+                    row.put("last_panel_exposed_at", asset.getLastPanelExposedAt());
                     row.put("last_signal_generated_at", asset.getLastSignalGeneratedAt());
                     row.put("last_quote_received_at", asset.getLastQuoteReceivedAt());
                     row.put("last_news_linked_at", asset.getLastNewsLinkedAt());
@@ -256,6 +279,10 @@ public class UniverseRebuildService {
                 .collect(Collectors.groupingBy(
                         asset -> asset.getUniverseLayer() == null ? "N/A" : asset.getUniverseLayer().name(),
                         Collectors.counting()));
+        Map<String, Long> byStrategyScope = filtered.stream()
+                .collect(Collectors.groupingBy(
+                        asset -> safeString(asset.getStrategyScope(), "ALL"),
+                        Collectors.counting()));
 
         Map<String, Long> topFamilies = filtered.stream()
                 .collect(Collectors.groupingBy(asset -> tickerFamily(asset.getAssetCode()), Collectors.counting()))
@@ -272,6 +299,10 @@ public class UniverseRebuildService {
         long staleSignalCount = filtered.stream().filter(asset -> !hasFreshSignal(asset.getLastSignalGeneratedAt())).count();
         long staleNewsCount = filtered.stream().filter(asset -> !hasFreshNewsLink(asset.getLastNewsLinkedAt())).count();
         long priorityThemeCount = filtered.stream().filter(asset -> isPriorityTheme(asset.getThemeCode())).count();
+        long activeCooldownCount = filtered.stream().filter(this::hasActivePanelCooldown).count();
+        long repeatedExposureAssetCount = filtered.stream()
+                .filter(asset -> (asset.getPanelExposureCount24h() == null ? 0 : asset.getPanelExposureCount24h()) >= 3)
+                .count();
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("scope_country", safeString(country, "ALL"));
@@ -288,7 +319,10 @@ public class UniverseRebuildService {
         response.put("assets_by_theme", byTheme);
         response.put("assets_by_theme_code", byThemeCode);
         response.put("assets_by_layer", byLayer);
+        response.put("assets_by_strategy_scope", byStrategyScope);
         response.put("top_repeated_families", topFamilies);
+        response.put("active_panel_cooldown_assets", activeCooldownCount);
+        response.put("repeated_panel_exposure_assets", repeatedExposureAssetCount);
         response.put("minimum_rules", Map.of(
                 "min_assets_per_country", Math.max(1, minAssetsPerCountry),
                 "min_assets_per_theme", Math.max(1, minAssetsPerTheme),
@@ -303,6 +337,7 @@ public class UniverseRebuildService {
             List<AssetUniverseEntity> assets,
             Map<String, Long> mentionCountByAsset,
             Map<String, BigDecimal> avgVolumeByAsset,
+            Map<String, BigDecimal> volatilityByAsset,
             Map<String, Long> exposureCountByAsset,
             Map<String, BigDecimal> latestQualityScoreByScope,
             String country) {
@@ -332,6 +367,9 @@ public class UniverseRebuildService {
                     : avgVolume.divide(maxVolume, 6, RoundingMode.HALF_UP).min(BigDecimal.ONE);
             BigDecimal volumeScore = volumeNormalized.multiply(BigDecimal.valueOf(35));
 
+            BigDecimal volatilityNormalized = clamp01(volatilityByAsset.getOrDefault(asset.getAssetCode(), BigDecimal.ZERO));
+            BigDecimal volatilityScore = volatilityNormalized.multiply(BigDecimal.valueOf(8));
+
             long mentions = mentionCountByAsset.getOrDefault(asset.getAssetCode(), 0L);
             BigDecimal mentionNormalized = BigDecimal.valueOf(mentions)
                     .divide(BigDecimal.valueOf(Math.max(1L, maxMentions)), 6, RoundingMode.HALF_UP);
@@ -356,6 +394,7 @@ public class UniverseRebuildService {
 
             BigDecimal raw = liquidityScore
                     .add(volumeScore)
+                    .add(volatilityScore)
                     .add(mentionScore)
                     .add(themeScore)
                     .add(priorityThemeBonus)
@@ -376,6 +415,7 @@ public class UniverseRebuildService {
                     priorityThemeBonus,
                     mentionNormalized,
                     volumeNormalized,
+                    volatilityNormalized,
                     tradeEligibleByQuality);
             ranked.add(new AssetRank(
                     asset,
@@ -386,7 +426,10 @@ public class UniverseRebuildService {
                     diversityScore,
                     tradeEligibleByQuality,
                     isPriorityTheme(themeCode),
-                    selectionReason));
+                    selectionReason,
+                    mentionNormalized,
+                    volumeNormalized,
+                    volatilityNormalized));
         }
 
         ranked.sort(Comparator.comparing(AssetRank::score).reversed()
@@ -632,6 +675,32 @@ public class UniverseRebuildService {
         return result;
     }
 
+    private Map<String, BigDecimal> calculateVolatilityByAsset(List<AssetUniverseEntity> assets) {
+        Map<String, BigDecimal> result = new HashMap<>();
+        int lookback = Math.max(5, volatilityLookbackBars);
+        BigDecimal maxRangePct = safeDecimal(volatilityMaxRangePct).compareTo(BigDecimal.ZERO) > 0
+                ? safeDecimal(volatilityMaxRangePct)
+                : BigDecimal.valueOf(0.20d);
+        for (AssetUniverseEntity asset : assets) {
+            List<MarketPriceBarEntity> bars = marketPriceBarRepository.findTop240ByAssetCodeAndTimeframeOrderByBarTimeDesc(
+                    asset.getAssetCode(), "D1");
+            List<MarketPriceBarEntity> sample = bars.stream().limit(lookback).toList();
+            if (sample.isEmpty()) {
+                result.put(asset.getAssetCode(), BigDecimal.ZERO);
+                continue;
+            }
+            BigDecimal avgRangePct = sample.stream()
+                    .map(this::barRangePct)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add)
+                    .divide(BigDecimal.valueOf(sample.size()), 6, RoundingMode.HALF_UP);
+            BigDecimal normalized = maxRangePct.compareTo(BigDecimal.ZERO) <= 0
+                    ? BigDecimal.ZERO
+                    : avgRangePct.divide(maxRangePct, 6, RoundingMode.HALF_UP);
+            result.put(asset.getAssetCode(), clamp01(normalized));
+        }
+        return result;
+    }
+
     private Map<String, OffsetDateTime> resolveLatestQuoteReceivedAtByAsset(List<AssetUniverseEntity> assets) {
         Map<String, OffsetDateTime> result = new HashMap<>();
         for (AssetUniverseEntity asset : assets) {
@@ -669,6 +738,24 @@ public class UniverseRebuildService {
         return sum.divide(BigDecimal.valueOf(filtered.size()), 6, RoundingMode.HALF_UP);
     }
 
+    private BigDecimal barRangePct(MarketPriceBarEntity bar) {
+        if (bar == null) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal high = safeDecimal(bar.getHighPrice());
+        BigDecimal low = safeDecimal(bar.getLowPrice());
+        BigDecimal base = safeDecimal(bar.getClosePrice());
+        if (base.compareTo(BigDecimal.ZERO) <= 0) {
+            base = safeDecimal(bar.getOpenPrice());
+        }
+        if (base.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return high.subtract(low).max(BigDecimal.ZERO)
+                .divide(base, 6, RoundingMode.HALF_UP)
+                .max(BigDecimal.ZERO);
+    }
+
     private AssetSelectionSourceType decideSelectionSource(
             AssetUniverseEntity asset,
             BigDecimal mentionNormalized,
@@ -686,6 +773,54 @@ public class UniverseRebuildService {
             return AssetSelectionSourceType.DISCOVERY;
         }
         return AssetSelectionSourceType.MARKET_CAP;
+    }
+
+    private String resolveStrategyScope(AssetRank rank) {
+        if (rank == null || rank.asset() == null) {
+            return "ALL";
+        }
+        AssetUniverseEntity asset = rank.asset();
+        if (!rank.tradeEligible()) {
+            return "DISCOVERY";
+        }
+        if (Boolean.TRUE.equals(asset.getIsUserWatch()) || Boolean.TRUE.equals(asset.getIsWatchlistAsset())) {
+            return "ALL";
+        }
+        if (rank.priorityTheme() && rank.mentionNormalized().compareTo(BigDecimal.valueOf(0.55d)) >= 0) {
+            return "SCALP_SWING";
+        }
+        if (rank.volatilityNormalized().compareTo(BigDecimal.valueOf(0.70d)) >= 0
+                && rank.volumeNormalized().compareTo(BigDecimal.valueOf(0.45d)) >= 0) {
+            return "SCALP";
+        }
+        if (rank.volatilityNormalized().compareTo(BigDecimal.valueOf(0.25d)) <= 0
+                && rank.qualityScore().compareTo(minQualityScoreForCore) >= 0) {
+            return "SWING";
+        }
+        if (asset.getUniverseLayer() == UniverseLayerType.DISCOVERY) {
+            return "DISCOVERY";
+        }
+        return "ALL";
+    }
+
+    private void normalizePanelExposureWindow(AssetUniverseEntity asset, OffsetDateTime now) {
+        if (asset == null) {
+            return;
+        }
+        if (asset.getPanelExposureCount24h() == null) {
+            asset.setPanelExposureCount24h(0);
+        }
+        OffsetDateTime lastExposed = asset.getLastPanelExposedAt();
+        if (lastExposed != null && lastExposed.isBefore(now.minusHours(24))) {
+            asset.setPanelExposureCount24h(0);
+        }
+    }
+
+    private String normalizeCountryCode(String country) {
+        if (country == null || country.isBlank()) {
+            return null;
+        }
+        return country.trim().toUpperCase(Locale.ROOT);
     }
 
     private List<AssetUniverseEntity> resolveByCountryAndThemeOrThemeCode(String country, String theme) {
@@ -753,6 +888,7 @@ public class UniverseRebuildService {
             BigDecimal priorityThemeBonus,
             BigDecimal mentionNormalized,
             BigDecimal volumeNormalized,
+            BigDecimal volatilityNormalized,
             boolean tradeEligibleByQuality) {
         StringBuilder sb = new StringBuilder();
         sb.append("source=").append(selectionSource == null ? "MANUAL" : selectionSource.name());
@@ -769,6 +905,7 @@ public class UniverseRebuildService {
         }
         sb.append(",mention_norm=").append(mentionNormalized.setScale(2, RoundingMode.HALF_UP));
         sb.append(",volume_norm=").append(volumeNormalized.setScale(2, RoundingMode.HALF_UP));
+        sb.append(",volatility_norm=").append(safeDecimal(volatilityNormalized).setScale(2, RoundingMode.HALF_UP));
         sb.append(",trade_quality_ok=").append(tradeEligibleByQuality);
         if (asset.getTheme() != null && !asset.getTheme().isBlank()) {
             sb.append(",raw_theme=").append(normalizeTextForReason(asset.getTheme()));
@@ -805,6 +942,17 @@ public class UniverseRebuildService {
             return false;
         }
         return lastQuoteReceivedAt.isAfter(OffsetDateTime.now().minusMinutes(Math.max(1, quoteFreshnessThresholdMinutes)));
+    }
+
+    private boolean hasActivePanelCooldown(AssetUniverseEntity asset) {
+        if (asset == null || asset.getLastPanelExposedAt() == null) {
+            return false;
+        }
+        int cooldownMinutes = asset.getDupExposureCooldownMinutes() == null ? 0 : Math.max(0, asset.getDupExposureCooldownMinutes());
+        if (cooldownMinutes <= 0) {
+            return false;
+        }
+        return asset.getLastPanelExposedAt().isAfter(OffsetDateTime.now().minusMinutes(cooldownMinutes));
     }
 
     private boolean hasFreshSignal(OffsetDateTime lastSignalGeneratedAt) {
@@ -942,7 +1090,10 @@ public class UniverseRebuildService {
             BigDecimal diversityScore,
             boolean tradeEligible,
             boolean priorityTheme,
-            String selectionReason) {
+            String selectionReason,
+            BigDecimal mentionNormalized,
+            BigDecimal volumeNormalized,
+            BigDecimal volatilityNormalized) {
     }
 
     public record UniverseRebuildResult(

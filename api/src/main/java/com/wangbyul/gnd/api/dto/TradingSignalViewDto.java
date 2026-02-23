@@ -98,6 +98,24 @@ public class TradingSignalViewDto {
     @JsonProperty("theme_code")
     private String themeCode;
 
+    @JsonProperty("country_code")
+    private String countryCode;
+
+    @JsonProperty("strategy_scope")
+    private String strategyScope;
+
+    @JsonProperty("panel_exposure_count_24h")
+    private Integer panelExposureCount24h;
+
+    @JsonProperty("dup_exposure_cooldown_minutes")
+    private Integer dupExposureCooldownMinutes;
+
+    @JsonProperty("last_panel_exposed_at")
+    private OffsetDateTime lastPanelExposedAt;
+
+    @JsonProperty("panel_cooldown_active")
+    private Boolean panelCooldownActive;
+
     @JsonProperty("strategy_key")
     private String strategyKey;
 

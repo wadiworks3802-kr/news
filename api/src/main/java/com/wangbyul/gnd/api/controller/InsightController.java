@@ -300,6 +300,145 @@ public class InsightController {
         return providerName != null && providerName.toUpperCase(Locale.ROOT).contains("MOCK");
     }
 
+    private void enrichPanelSelectionMeta(
+            Map<String, Object> meta,
+            String requestedTheme,
+            List<TradingSignalViewDto> data) {
+        if (meta == null) {
+            return;
+        }
+        List<TradingSignalViewDto> rows = data == null ? List.of() : data;
+        String requestedThemeCode = tradingSignalEngineService.normalizeThemeForApi(requestedTheme);
+        boolean explicitThemeRequested = requestedThemeCode != null
+                && !requestedThemeCode.isBlank()
+                && !"ALL".equalsIgnoreCase(requestedThemeCode);
+
+        Map<String, Long> themeCodeDistribution = new LinkedHashMap<>();
+        Map<String, Long> strategyScopeDistribution = new LinkedHashMap<>();
+        Map<String, Long> assetCodeDistribution = new LinkedHashMap<>();
+        Map<String, Long> familyDistribution = new LinkedHashMap<>();
+        LinkedHashSet<String> selectedThemeCodes = new LinkedHashSet<>();
+
+        int selectedThemeMatchCount = 0;
+        int coreThemeFilterAppliedCount = 0;
+        int panelCooldownActiveCount = 0;
+
+        for (TradingSignalViewDto row : rows) {
+            if (row == null) {
+                continue;
+            }
+            String themeCode = normalizePanelThemeCode(row.getThemeCode());
+            String strategyScope = normalizePanelMetaToken(row.getStrategyScope(), "ALL");
+            String assetCode = normalizePanelMetaToken(row.getAssetCode(), "");
+            String familyKey = assetFamilyKey(assetCode);
+
+            selectedThemeCodes.add(themeCode);
+            incrementCount(themeCodeDistribution, themeCode);
+            incrementCount(strategyScopeDistribution, strategyScope);
+            if (!assetCode.isBlank()) {
+                incrementCount(assetCodeDistribution, assetCode);
+                incrementCount(familyDistribution, familyKey);
+            }
+            if (explicitThemeRequested && requestedThemeCode.equalsIgnoreCase(themeCode)) {
+                selectedThemeMatchCount++;
+            }
+            if (Boolean.TRUE.equals(row.getCoreThemeFilterApplied())) {
+                coreThemeFilterAppliedCount++;
+            }
+            if (Boolean.TRUE.equals(row.getPanelCooldownActive())) {
+                panelCooldownActiveCount++;
+            }
+        }
+
+        long duplicateAssetRows = duplicateRowCount(assetCodeDistribution);
+        long repeatedFamilyCount = familyDistribution.values().stream().filter(count -> count > 1L).count();
+        long duplicateFamilyRows = duplicateRowCount(familyDistribution);
+        boolean themeSelectionReflected = !explicitThemeRequested || selectedThemeMatchCount > 0 || rows.isEmpty();
+
+        List<String> warnings = new ArrayList<>();
+        Object existingWarnings = meta.get("warnings");
+        if (existingWarnings instanceof List<?> warningRows) {
+            for (Object warning : warningRows) {
+                if (warning instanceof String s && !s.isBlank() && !warnings.contains(s)) {
+                    warnings.add(s);
+                }
+            }
+        }
+        if (explicitThemeRequested && !rows.isEmpty() && selectedThemeMatchCount == 0) {
+            warnings.add("핵심분야 선택값(theme=" + requestedThemeCode + ")이 패널 결과에 반영되지 않았습니다.");
+        } else if (explicitThemeRequested && selectedThemeMatchCount > 0 && selectedThemeMatchCount < rows.size()) {
+            warnings.add("핵심분야 선택값(theme=" + requestedThemeCode + ")이 일부 결과에만 반영되었습니다(중복억제/완화 fallback 가능).");
+        }
+        if (duplicateAssetRows > 0L) {
+            warnings.add("전략패널 결과에 동일 종목 중복 " + duplicateAssetRows + "건이 감지되었습니다.");
+        }
+        if (repeatedFamilyCount > 0L) {
+            warnings.add("전략패널 결과에 동일 종목군 반복이 감지되었습니다(" + repeatedFamilyCount + "개 패밀리).");
+        }
+        if (panelCooldownActiveCount > 0) {
+            warnings.add("패널 결과에 최근 노출 쿨다운 상태 종목이 포함되었습니다(" + panelCooldownActiveCount + "건).");
+        }
+
+        meta.put("requested_theme_code", explicitThemeRequested ? requestedThemeCode : "ALL");
+        meta.put("theme_selection_reflected", themeSelectionReflected);
+        meta.put("selected_theme_match_count", selectedThemeMatchCount);
+        meta.put("selected_count", rows.size());
+        meta.put("selected_theme_codes", new ArrayList<>(selectedThemeCodes));
+        meta.put("theme_code_distribution", themeCodeDistribution);
+        meta.put("strategy_scope_distribution", strategyScopeDistribution);
+        meta.put("core_theme_filter_applied_count", coreThemeFilterAppliedCount);
+        meta.put("duplicate_asset_rows", duplicateAssetRows);
+        meta.put("repeated_family_count", repeatedFamilyCount);
+        meta.put("duplicate_family_rows", duplicateFamilyRows);
+        meta.put("panel_cooldown_active_count", panelCooldownActiveCount);
+        meta.put("warnings", warnings);
+    }
+
+    private String normalizePanelThemeCode(String themeCode) {
+        return normalizePanelMetaToken(themeCode, "UNSPECIFIED");
+    }
+
+    private String normalizePanelMetaToken(String value, String defaultValue) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        return value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private void incrementCount(Map<String, Long> counter, String key) {
+        counter.put(key, counter.getOrDefault(key, 0L) + 1L);
+    }
+
+    private long duplicateRowCount(Map<String, Long> counter) {
+        long duplicateRows = 0L;
+        for (Long count : counter.values()) {
+            if (count != null && count > 1L) {
+                duplicateRows += (count - 1L);
+            }
+        }
+        return duplicateRows;
+    }
+
+    private String assetFamilyKey(String assetCode) {
+        if (assetCode == null || assetCode.isBlank()) {
+            return "";
+        }
+        String normalized = assetCode.trim().toUpperCase(Locale.ROOT);
+        int colonIndex = normalized.indexOf(':');
+        if (colonIndex > 0) {
+            normalized = normalized.substring(0, colonIndex);
+        }
+        int dotIndex = normalized.indexOf('.');
+        if (dotIndex > 0) {
+            normalized = normalized.substring(0, dotIndex);
+        }
+        int dashIndex = normalized.indexOf('-');
+        if (dashIndex > 0) {
+            normalized = normalized.substring(0, dashIndex);
+        }
+        return normalized;
+    }
+
     /**
      * 국가별 뉴스 연관 주식 시그널(개인 참고용) 조회.
      */
@@ -330,17 +469,20 @@ public class InsightController {
             @RequestParam(required = false) String theme,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int limit) {
         List<TradingSignalViewDto> data = tradingSignalEngineService.getScalpSignals(country, theme, limit);
+        String normalizedThemeCode = normalizePanelMetaToken(tradingSignalEngineService.normalizeThemeForApi(theme), "ALL");
+        Map<String, Object> meta = metaWithMarketDataContext(
+                Map.of(
+                        "country", country,
+                        "theme", theme == null ? "" : theme,
+                        "theme_code", normalizedThemeCode,
+                        "limit", limit,
+                        "panel", "scalp",
+                        "selection_policy", "universe-dedup-v2"),
+                data.stream().map(TradingSignalViewDto::getAssetCode).toList());
+        enrichPanelSelectionMeta(meta, theme, data);
         return ApiEnvelope.<List<TradingSignalViewDto>>builder()
                 .data(data)
-                .meta(metaWithMarketDataContext(
-                        Map.of(
-                                "country", country,
-                                "theme", theme == null ? "" : theme,
-                                "theme_code", tradingSignalEngineService.normalizeThemeForApi(theme),
-                                "limit", limit,
-                                "panel", "scalp",
-                                "selection_policy", "universe-dedup-v2"),
-                        data.stream().map(TradingSignalViewDto::getAssetCode).toList()))
+                .meta(meta)
                 .traceId(traceId())
                 .build();
     }
@@ -354,17 +496,20 @@ public class InsightController {
             @RequestParam(required = false) String theme,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int limit) {
         List<TradingSignalViewDto> data = tradingSignalEngineService.getSwingSignals(country, theme, limit);
+        String normalizedThemeCode = normalizePanelMetaToken(tradingSignalEngineService.normalizeThemeForApi(theme), "ALL");
+        Map<String, Object> meta = metaWithMarketDataContext(
+                Map.of(
+                        "country", country,
+                        "theme", theme == null ? "" : theme,
+                        "theme_code", normalizedThemeCode,
+                        "limit", limit,
+                        "panel", "swing",
+                        "selection_policy", "universe-dedup-v2"),
+                data.stream().map(TradingSignalViewDto::getAssetCode).toList());
+        enrichPanelSelectionMeta(meta, theme, data);
         return ApiEnvelope.<List<TradingSignalViewDto>>builder()
                 .data(data)
-                .meta(metaWithMarketDataContext(
-                        Map.of(
-                                "country", country,
-                                "theme", theme == null ? "" : theme,
-                                "theme_code", tradingSignalEngineService.normalizeThemeForApi(theme),
-                                "limit", limit,
-                                "panel", "swing",
-                                "selection_policy", "universe-dedup-v2"),
-                        data.stream().map(TradingSignalViewDto::getAssetCode).toList()))
+                .meta(meta)
                 .traceId(traceId())
                 .build();
     }
@@ -395,18 +540,21 @@ public class InsightController {
             @RequestParam(defaultValue = "6m") String period,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int limit) {
         List<TradingSignalViewDto> data = tradingSignalEngineService.getDiscoverySignals(country, theme, limit);
+        String normalizedThemeCode = normalizePanelMetaToken(tradingSignalEngineService.normalizeThemeForApi(theme), "ALL");
+        Map<String, Object> meta = metaWithMarketDataContext(
+                Map.of(
+                        "country", country,
+                        "theme", theme == null ? "" : theme,
+                        "theme_code", normalizedThemeCode,
+                        "period", period,
+                        "limit", limit,
+                        "panel", "discovery",
+                        "selection_policy", "universe-dedup-v2"),
+                data.stream().map(TradingSignalViewDto::getAssetCode).toList());
+        enrichPanelSelectionMeta(meta, theme, data);
         return ApiEnvelope.<List<TradingSignalViewDto>>builder()
                 .data(data)
-                .meta(metaWithMarketDataContext(
-                        Map.of(
-                                "country", country,
-                                "theme", theme == null ? "" : theme,
-                                "theme_code", tradingSignalEngineService.normalizeThemeForApi(theme),
-                                "period", period,
-                                "limit", limit,
-                                "panel", "discovery",
-                                "selection_policy", "universe-dedup-v2"),
-                        data.stream().map(TradingSignalViewDto::getAssetCode).toList()))
+                .meta(meta)
                 .traceId(traceId())
                 .build();
     }

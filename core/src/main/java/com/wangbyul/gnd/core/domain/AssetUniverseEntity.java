@@ -37,6 +37,10 @@ public class AssetUniverseEntity {
     @Column(name = "country", nullable = false, length = 5)
     private String country;
 
+    @Column(name = "country_code", length = 5)
+    @Comment("정규화된 국가 코드(조회/진단/정책 필터용)")
+    private String countryCode;
+
     @Column(name = "theme", length = 64)
     private String theme;
 
@@ -83,6 +87,10 @@ public class AssetUniverseEntity {
     @Comment("유니버스 선정 근거 요약(진단/패널 메타용)")
     private String selectionReason;
 
+    @Column(name = "strategy_scope", length = 64)
+    @Comment("전략 패널 우선 노출 범위(SCALP, SWING, POSITION, DISCOVERY, SCALP_SWING, ALL)")
+    private String strategyScope;
+
     @Column(name = "market_cap_rank")
     @Comment("국가/시장 기준 시가총액 순위")
     private Integer marketCapRank;
@@ -114,6 +122,14 @@ public class AssetUniverseEntity {
     @Column(name = "last_signal_generated_at")
     @Comment("가장 최근 시그널 생성 시각")
     private OffsetDateTime lastSignalGeneratedAt;
+
+    @Column(name = "last_panel_exposed_at")
+    @Comment("가장 최근 전략 패널 노출 시각(중복 억제용)")
+    private OffsetDateTime lastPanelExposedAt;
+
+    @Column(name = "panel_exposure_count_24h", nullable = false)
+    @Comment("최근 24시간 전략 패널 노출 누적 횟수")
+    private Integer panelExposureCount24h = 0;
 
     @Column(name = "last_quote_received_at")
     @Comment("가장 최근 시세 수신 시각(quote)")
@@ -153,6 +169,9 @@ public class AssetUniverseEntity {
         if (themeCode != null && themeCode.isBlank()) {
             themeCode = null;
         }
+        if (countryCode != null && countryCode.isBlank()) {
+            countryCode = null;
+        }
         if (isTradeEnabled == null) {
             isTradeEnabled = true;
         }
@@ -180,8 +199,17 @@ public class AssetUniverseEntity {
         if (dupExposureCooldownMinutes == null) {
             dupExposureCooldownMinutes = 0;
         }
+        if (panelExposureCount24h == null) {
+            panelExposureCount24h = 0;
+        }
         if (verificationStatus == null) {
             verificationStatus = AssetVerificationStatusType.UNVERIFIED;
+        }
+        if (countryCode == null || countryCode.isBlank()) {
+            countryCode = country;
+        }
+        if (strategyScope != null && strategyScope.isBlank()) {
+            strategyScope = null;
         }
     }
 
@@ -189,6 +217,12 @@ public class AssetUniverseEntity {
     public void preUpdate() {
         if (isUserWatch == null) {
             isUserWatch = Boolean.TRUE.equals(isWatchlistAsset);
+        }
+        if (countryCode == null || countryCode.isBlank()) {
+            countryCode = country;
+        }
+        if (panelExposureCount24h == null) {
+            panelExposureCount24h = 0;
         }
         updatedAt = OffsetDateTime.now();
     }
