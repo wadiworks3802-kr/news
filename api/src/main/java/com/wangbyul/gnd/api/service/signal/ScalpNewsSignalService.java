@@ -181,6 +181,9 @@ public class ScalpNewsSignalService {
             boolean inCurrentWindow = eventTime == null || (!eventTime.isBefore(since) && !eventTime.isAfter(signalTime));
             boolean inPreviousWindow = eventTime != null && eventTime.isBefore(since) && !eventTime.isBefore(extendedSince);
             if (!inCurrentWindow && !inPreviousWindow) {
+                if (eventTime != null && signalTime != null && eventTime.isAfter(signalTime)) {
+                    filteredFutureCount++;
+                }
                 continue;
             }
 
@@ -240,7 +243,8 @@ public class ScalpNewsSignalService {
         Map<String, Object> breakdown = new LinkedHashMap<>();
         breakdown.put("mode", ruleV1 ? "RULE_V1" : mode);
         breakdown.put("data_state", agg.dataState());
-        breakdown.put("signal_time_utc", signalTime);
+        breakdown.put("analysis_state", agg.analysisState());
+        breakdown.put("signal_time_utc", signalTime == null ? null : signalTime.toString());
         breakdown.put("window_minutes", effectiveWindowMinutes);
         breakdown.put("extended_window_minutes", Math.max(2, effectiveWindowMinutes * 2L));
         breakdown.put("min_news_count_for_probability", minNewsCount);
@@ -733,12 +737,23 @@ public class ScalpNewsSignalService {
 
         double posNorm = normalizedMass(positiveMass);
         double negNorm = normalizedMass(negativeMass);
-        double globalPenalty = Math.min(0.25d, insufficientSample ? 0.10d : 0d);
+        double globalPenalty = Math.min(0.30d, noMatchedNews ? 0.18d : (insufficientSample ? 0.10d : 0d));
         BigDecimal goodProb;
         BigDecimal badProb;
         if (noMatchedNews || insufficientSample) {
-            goodProb = BigDecimal.valueOf(0.5d);
-            badProb = BigDecimal.valueOf(0.5d);
+            // 데이터 부족 상태에서는 50:50 고정값을 금지하고, 관측된 근거 질량이 있으면 낮은 수준으로만 반영한다.
+            double sparseGood = Math.max(0d,
+                    (posNorm * 0.32d)
+                            + (Math.max(0d, eligibleNewsChangeRate) * 0.03d)
+                            - (Math.max(0d, negNorm) * 0.04d)
+                            - globalPenalty);
+            double sparseBad = Math.max(0d,
+                    (negNorm * 0.32d)
+                            + (Math.max(0d, -eligibleNewsChangeRate) * 0.03d)
+                            - (Math.max(0d, posNorm) * 0.04d)
+                            - globalPenalty);
+            goodProb = SignalMath.clamp01(BigDecimal.valueOf(sparseGood));
+            badProb = SignalMath.clamp01(BigDecimal.valueOf(sparseBad));
         } else {
             goodProb = SignalMath.clamp01(BigDecimal.valueOf(0.08d + (posNorm * 0.78d) - (negNorm * 0.12d)
                     + Math.max(0d, eligibleNewsChangeRate) * 0.05d - globalPenalty));
@@ -766,6 +781,20 @@ public class ScalpNewsSignalService {
         BigDecimal scalpScore = SignalMath.clampScore(goodProb.subtract(badProb).multiply(confidence.max(BigDecimal.valueOf(0.35d))));
 
         String dataState = noMatchedNews ? "NO_MATCHED_NEWS" : (insufficientSample ? "INSUFFICIENT_DATA" : "SUFFICIENT_DATA");
+        long latestQuoteAgeMinutes = latestQuoteAgeMinutes(signalTime, quotesAsc);
+        long latestBarAgeMinutes = latestBarAgeMinutes(signalTime, bars1m);
+        int stalenessThresholdMinutes = Math.max(10, Math.min(60, resolveScalpWindowMinutes()));
+        boolean reanalysisPending = !noMatchedNews && !insufficientSample
+                && (avgPriceCoverage < 0.45d
+                || avgAlignmentPenalty > 0.18d
+                || latestQuoteAgeMinutes > stalenessThresholdMinutes
+                || latestBarAgeMinutes > stalenessThresholdMinutes);
+        boolean neutralState = !noMatchedNews && !insufficientSample && !reanalysisPending
+                && (goodProb.subtract(badProb).abs().compareTo(BigDecimal.valueOf(0.08d)) < 0
+                || confidence.compareTo(BigDecimal.valueOf(0.40d)) < 0);
+        String analysisState = (noMatchedNews || insufficientSample)
+                ? "INSUFFICIENT_DATA"
+                : (reanalysisPending ? "REANALYSIS_PENDING" : (neutralState ? "NEUTRAL" : "EVIDENCE_READY"));
         List<String> missingRequirements = buildMissingRequirements(noMatchedNews, insufficientSample, eligibleCount, minNewsCount, avgPriceCoverage);
         List<String> changeConditions = buildChangeConditions(dataState, minNewsCount, eligibleCount, avgPriceCoverage);
         String explainText = buildExplainText(asset, dataState, goodProb, badProb, confidence, eligibleCount, currentMapped.size(), posFactor, negFactor, missingRequirements);
@@ -775,8 +804,8 @@ public class ScalpNewsSignalService {
                 "publish_fetch_order_warning_count", currentMapped.stream().filter(ScalpEvidence::invalidPublishFetchOrder).count(),
                 "avg_alignment_penalty_rate", round6(avgAlignmentPenalty));
         Map<String, Object> freshness = Map.of(
-                "latest_quote_age_minutes", latestQuoteAgeMinutes(signalTime, quotesAsc),
-                "latest_bar_1m_age_minutes", latestBarAgeMinutes(signalTime, bars1m),
+                "latest_quote_age_minutes", latestQuoteAgeMinutes,
+                "latest_bar_1m_age_minutes", latestBarAgeMinutes,
                 "price_data_coverage_ratio", round6(avgPriceCoverage),
                 "news_decay_freshness_ratio", round6(avgFresh));
         Map<String, Object> dedup = Map.of(
@@ -787,7 +816,7 @@ public class ScalpNewsSignalService {
 
         return new ScalpAggregation(
                 goodProb, badProb, confidence, scalpScore,
-                eligibleCount, insufficientSample, dataState,
+                eligibleCount, insufficientSample, dataState, analysisState,
                 positiveMass, negativeMass, posNorm, negNorm,
                 newsVolumeChangeRate, eligibleNewsChangeRate,
                 topFactorList(posFactor, true), topFactorList(negFactor, false),
@@ -1045,9 +1074,42 @@ public class ScalpNewsSignalService {
     private String toJson(Object map) {
         try {
             return objectMapper.writeValueAsString(map);
-        } catch (Exception ignored) {
-            return "{}";
+        } catch (Exception first) {
+            try {
+                return objectMapper.writeValueAsString(sanitizeJsonValue(map));
+            } catch (Exception ignored) {
+                return "{}";
+            }
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Object sanitizeJsonValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Double d) {
+            return Double.isFinite(d) ? d : 0d;
+        }
+        if (value instanceof Float f) {
+            return Float.isFinite(f) ? f : 0f;
+        }
+        if (value instanceof Map<?, ?> rawMap) {
+            Map<String, Object> sanitized = new LinkedHashMap<>();
+            rawMap.forEach((k, v) -> sanitized.put(String.valueOf(k), sanitizeJsonValue(v)));
+            return sanitized;
+        }
+        if (value instanceof List<?> list) {
+            return list.stream().map(this::sanitizeJsonValue).toList();
+        }
+        if (value instanceof Iterable<?> iterable) {
+            List<Object> items = new ArrayList<>();
+            for (Object item : iterable) {
+                items.add(sanitizeJsonValue(item));
+            }
+            return items;
+        }
+        return value;
     }
 
     private record LinkEvaluation(
@@ -1110,6 +1172,7 @@ public class ScalpNewsSignalService {
             int eligibleCount,
             boolean insufficientSample,
             String dataState,
+            String analysisState,
             double positiveMass,
             double negativeMass,
             double positiveMassNormalized,

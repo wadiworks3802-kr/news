@@ -3,6 +3,7 @@ package com.wangbyul.gnd.api.service.signal;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -50,7 +51,7 @@ class ScalpNewsSignalServiceTest {
     private MarketQuoteSnapshotRepository marketQuoteSnapshotRepository;
 
     @Test
-    void insufficientSampleShouldReturnNeutralProbability() {
+    void insufficientSampleShouldReturnStateInsteadOfForcedFiftyFifty() {
         SignalPolicyProperties properties = defaultProperties();
         ScalpNewsSignalService service = newService(properties);
 
@@ -64,10 +65,11 @@ class ScalpNewsSignalServiceTest {
         AssetUniverseEntity asset = asset("AAPL", "Apple", "KR", "TECH");
         ScalpSignalResult result = service.analyze(asset, now, 60);
 
-        assertThat(result.goodNewsProbability()).isEqualByComparingTo("0.5000");
-        assertThat(result.badNewsProbability()).isEqualByComparingTo("0.5000");
+        assertThat(result.goodNewsProbability()).isNotEqualByComparingTo("0.5000");
+        assertThat(result.badNewsProbability()).isNotEqualByComparingTo("0.5000");
         assertThat(result.newsConfidence()).isGreaterThanOrEqualTo(properties.getInsufficientSampleConfidenceFloor());
         assertThat(result.probabilityReasonBreakdownJson()).contains("\"data_state\":\"INSUFFICIENT_DATA\"");
+        assertThat(result.probabilityReasonBreakdownJson()).contains("\"analysis_state\":\"INSUFFICIENT_DATA\"");
     }
 
     @Test
@@ -91,7 +93,7 @@ class ScalpNewsSignalServiceTest {
         assertThat(result.probabilityReasonBreakdownJson()).contains("\"filtered_trust_count\":1");
         assertThat(result.probabilityReasonBreakdownJson()).contains("\"filtered_future_count\":1");
         assertThat(result.probabilityReasonBreakdownJson()).contains("\"news_alignment_result\"");
-        verify(newsAssetLinkRepository).save(any(NewsAssetLinkEntity.class));
+        verify(newsAssetLinkRepository, atLeastOnce()).save(any(NewsAssetLinkEntity.class));
     }
 
     @Test

@@ -44,6 +44,12 @@ public class TradingSignalViewDto {
     @JsonProperty("news_confidence")
     private BigDecimal newsConfidence;
 
+    @JsonProperty("analysis_state")
+    private String analysisState;
+
+    @JsonProperty("data_state")
+    private String dataState;
+
     @JsonProperty("probability_reason_breakdown_json")
     private String probabilityReasonBreakdownJson;
 

@@ -316,8 +316,11 @@ public class TradingSignalEngineService {
                 .action(signal.getAction())
                 .goodNewsProbability(signal.getGoodNewsProbability())
                 .badNewsProbability(signal.getBadNewsProbability())
+                .newsConfidence(firstNonNullBigDecimal(scale(signal.getNewsConfidence()), decimalField(scalpBreakdown, "news_confidence")))
                 .weeklyContextScore(signal.getWeeklyContextScore())
                 .combinedConfidence(signal.getCombinedConfidence())
+                .analysisState(textField(scalpBreakdown, "analysis_state"))
+                .dataState(textField(scalpBreakdown, "data_state"))
                 .probabilityReasonBreakdownJson(signal.getProbabilityReasonBreakdownJson())
                 .pressureReasonJson(signal.getPressureReasonJson())
                 .topPositiveFactorsJson(signal.getTopPositiveFactorsJson())
@@ -331,6 +334,7 @@ public class TradingSignalEngineService {
                 .newsEvidence(buildNewsEvidence(signal, scalpBreakdown))
                 .chartEvidence(List.of("MA/추세/변동성/거래량 기반"))
                 .priceEvidence(buildPriceEvidence(signal, scalpBreakdown))
+                .volumeEvidence(buildVolumeEvidence(signal, scalpBreakdown))
                 .riskEvidence(buildRiskEvidence(signal, riskChecks))
                 .decisionWhy(decisionWhy)
                 .missingRequirements(missingRequirements)
@@ -858,6 +862,7 @@ public class TradingSignalEngineService {
     private TradingSignalViewDto toViewDto(TradingSignalEntity signal, AssetUniverseEntity asset, PanelSelectionMeta panelMeta) {
         String assetName = asset != null && asset.getAssetName() != null ? asset.getAssetName()
                 : assetUniverseRepository.findById(signal.getAssetCode()).map(AssetUniverseEntity::getAssetName).orElse("-");
+        Map<String, Object> scalpBreakdown = parseJsonMap(signal.getProbabilityReasonBreakdownJson());
         return TradingSignalViewDto.builder()
                 .signalId(signal.getId())
                 .assetCode(signal.getAssetCode())
@@ -869,6 +874,8 @@ public class TradingSignalEngineService {
                 .goodNewsProbability(scale(signal.getGoodNewsProbability()))
                 .badNewsProbability(scale(signal.getBadNewsProbability()))
                 .newsConfidence(scale(signal.getNewsConfidence()))
+                .analysisState(textField(scalpBreakdown, "analysis_state"))
+                .dataState(textField(scalpBreakdown, "data_state"))
                 .probabilityReasonBreakdownJson(signal.getProbabilityReasonBreakdownJson())
                 .chartConfidence(scale(signal.getChartConfidence()))
                 .combinedConfidence(scale(signal.getCombinedConfidence()))
@@ -1113,13 +1120,23 @@ public class TradingSignalEngineService {
             return new LinkedHashMap<>();
         }
         try {
-            Object parsed = objectMapper.readValue(rawJson, Map.class);
+            Object parsed = objectMapper.readValue(rawJson, Object.class);
             if (parsed instanceof Map<?, ?> map) {
                 Map<String, Object> result = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     result.put(String.valueOf(entry.getKey()), entry.getValue());
                 }
                 return result;
+            }
+            if (parsed instanceof String nestedText && !nestedText.isBlank()) {
+                Object nestedParsed = objectMapper.readValue(nestedText, Object.class);
+                if (nestedParsed instanceof Map<?, ?> nestedMap) {
+                    Map<String, Object> result = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> entry : nestedMap.entrySet()) {
+                        result.put(String.valueOf(entry.getKey()), entry.getValue());
+                    }
+                    return result;
+                }
             }
         } catch (Exception ignored) {
         }
@@ -1169,6 +1186,30 @@ public class TradingSignalEngineService {
         return null;
     }
 
+    private BigDecimal firstNonNullBigDecimal(BigDecimal... values) {
+        if (values == null) {
+            return null;
+        }
+        for (BigDecimal value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private BigDecimal decimalField(Map<String, Object> map, String key) {
+        Object value = mapField(map, key, null);
+        if (value == null) {
+            return null;
+        }
+        try {
+            return new BigDecimal(String.valueOf(value));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
     private String resolveSignalExplainText(
             SignalActionType action,
             Map<String, Object> scalpBreakdown,
@@ -1196,6 +1237,10 @@ public class TradingSignalEngineService {
     private List<String> buildNewsEvidence(TradingSignalEntity signal, Map<String, Object> scalpBreakdown) {
         List<String> rows = new ArrayList<>();
         rows.add("뉴스 매핑/이벤트/감성/신뢰도 기반 RULE_V1");
+        String analysisState = textField(scalpBreakdown, "analysis_state");
+        if (analysisState != null) {
+            rows.add("분석 상태: " + analysisState);
+        }
         String dataState = textField(scalpBreakdown, "data_state");
         if (dataState != null) {
             rows.add("데이터 상태: " + dataState);
@@ -1214,9 +1259,28 @@ public class TradingSignalEngineService {
         Map<String, Object> freshness = parseJsonMap(signal.getDataFreshnessJson());
         Object coverage = freshness.get("price_data_coverage_ratio");
         if (coverage != null) {
-            rows.add("가격/거래량 데이터 커버리지: " + coverage);
+            rows.add("가격 데이터 커버리지: " + coverage);
         } else {
-            rows.add("가격/거래량 반응 데이터 기반(가능한 범위)");
+            rows.add("가격 반응 데이터 기반(가능한 범위)");
+        }
+        Object quoteAge = freshness.get("latest_quote_age_minutes");
+        if (quoteAge != null) {
+            rows.add("최신 시세 스냅샷 경과(분): " + quoteAge);
+        }
+        Object barAge = freshness.get("latest_bar_1m_age_minutes");
+        if (barAge != null) {
+            rows.add("최신 1분봉 경과(분): " + barAge);
+        }
+        return rows;
+    }
+
+    private List<String> buildVolumeEvidence(TradingSignalEntity signal, Map<String, Object> scalpBreakdown) {
+        List<String> rows = new ArrayList<>();
+        rows.add("거래량 변화율/가격반응 보조 피처 기반(가능한 범위)");
+        Map<String, Object> freshness = parseJsonMap(signal.getDataFreshnessJson());
+        Object coverage = freshness.get("price_data_coverage_ratio");
+        if (coverage != null) {
+            rows.add("거래량/가격 반응 데이터 커버리지: " + coverage);
         }
         Map<String, Object> dedup = parseJsonMap(signal.getDedupResultJson());
         Object dedupApplied = dedup.get("duplicate_article_penalty_applied");

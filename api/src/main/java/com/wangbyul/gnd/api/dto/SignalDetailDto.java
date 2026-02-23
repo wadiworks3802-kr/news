@@ -35,11 +35,20 @@ public class SignalDetailDto {
     @JsonProperty("bad_news_probability")
     private BigDecimal badNewsProbability;
 
+    @JsonProperty("news_confidence")
+    private BigDecimal newsConfidence;
+
     @JsonProperty("weekly_context_score")
     private BigDecimal weeklyContextScore;
 
     @JsonProperty("combined_confidence")
     private BigDecimal combinedConfidence;
+
+    @JsonProperty("analysis_state")
+    private String analysisState;
+
+    @JsonProperty("data_state")
+    private String dataState;
 
     @JsonProperty("probability_reason_breakdown_json")
     private String probabilityReasonBreakdownJson;
@@ -79,6 +88,9 @@ public class SignalDetailDto {
 
     @JsonProperty("price_evidence")
     private List<String> priceEvidence;
+
+    @JsonProperty("volume_evidence")
+    private List<String> volumeEvidence;
 
     @JsonProperty("risk_evidence")
     private List<String> riskEvidence;
