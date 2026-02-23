@@ -26,6 +26,9 @@ public class PaperTradeRiskDto {
     @JsonProperty("cash_remaining")
     private BigDecimal cashRemaining;
 
+    @JsonProperty("available_cash_ratio")
+    private BigDecimal availableCashRatio;
+
     @JsonProperty("max_position_ratio_per_asset")
     private BigDecimal maxPositionRatioPerAsset;
 
@@ -37,6 +40,9 @@ public class PaperTradeRiskDto {
 
     @JsonProperty("max_open_positions")
     private int maxOpenPositions;
+
+    @JsonProperty("remaining_open_position_slots")
+    private Integer remainingOpenPositionSlots;
 
     @JsonProperty("take_profit_pct")
     private BigDecimal takeProfitPct;
@@ -65,6 +71,9 @@ public class PaperTradeRiskDto {
     @JsonProperty("duplicate_exposure_stats")
     private Map<String, Long> duplicateExposureStats;
 
+    @JsonProperty("top_blocked_reasons")
+    private List<String> topBlockedReasons;
+
     @JsonProperty("buy_lock_count")
     private Integer buyLockCount;
 
@@ -74,14 +83,26 @@ public class PaperTradeRiskDto {
     @JsonProperty("data_quality_degraded_assets")
     private List<String> dataQualityDegradedAssets;
 
+    @JsonProperty("data_quality_degraded_count")
+    private Integer dataQualityDegradedCount;
+
     @JsonProperty("position_limit_warning_assets")
     private List<String> positionLimitWarningAssets;
+
+    @JsonProperty("position_limit_warning_count")
+    private Integer positionLimitWarningCount;
 
     @JsonProperty("portfolio_diversification_warning")
     private Boolean portfolioDiversificationWarning;
 
     @JsonProperty("portfolio_diversification_warnings")
     private List<String> portfolioDiversificationWarnings;
+
+    @JsonProperty("portfolio_heat_score")
+    private BigDecimal portfolioHeatScore;
+
+    @JsonProperty("portfolio_risk_level")
+    private String portfolioRiskLevel;
 
     @JsonProperty("reference_only")
     private Boolean referenceOnly;
@@ -98,9 +119,21 @@ public class PaperTradeRiskDto {
     @JsonProperty("recommended_buy_split_ratios")
     private List<Integer> recommendedBuySplitRatios;
 
+    @JsonProperty("recommended_buy_split_amounts_capital_basis")
+    private List<BigDecimal> recommendedBuySplitAmountsCapitalBasis;
+
+    @JsonProperty("recommended_buy_split_amounts_cash_basis")
+    private List<BigDecimal> recommendedBuySplitAmountsCashBasis;
+
     @JsonProperty("recommended_sell_split_ratios")
     private List<Integer> recommendedSellSplitRatios;
 
+    @JsonProperty("recommended_sell_split_amounts_invested_basis")
+    private List<BigDecimal> recommendedSellSplitAmountsInvestedBasis;
+
     @JsonProperty("reanalysis_lock_minutes")
     private Integer reanalysisLockMinutes;
+
+    @JsonProperty("reanalysis_pending_assets")
+    private List<String> reanalysisPendingAssets;
 }

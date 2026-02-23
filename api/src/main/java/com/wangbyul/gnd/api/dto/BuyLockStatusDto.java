@@ -29,5 +29,10 @@ public class BuyLockStatusDto {
 
     @JsonProperty("last_reanalysis_at")
     private OffsetDateTime lastReanalysisAt;
-}
 
+    @JsonProperty("reanalysis_pending")
+    private Boolean reanalysisPending;
+
+    @JsonProperty("remaining_lock_minutes")
+    private Long remainingLockMinutes;
+}

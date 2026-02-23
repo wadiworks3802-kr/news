@@ -586,6 +586,7 @@ window.ui = {
     const items = [
       `투자금 ${Number(risk.capital_total ?? 0).toLocaleString()}`,
       `투자중 ${Number(risk.invested_amount ?? 0).toLocaleString()} / 현금 ${Number(risk.cash_remaining ?? 0).toLocaleString()}`,
+      `위험도 ${risk.portfolio_risk_level || "UNKNOWN"} / heat ${Number(risk.portfolio_heat_score ?? 0).toFixed(3)} / 잔여 슬롯 ${Number(risk.remaining_open_position_slots ?? 0)}`,
       `종목당 최대 ${(Number(risk.max_position_ratio_per_asset ?? 0) * 100).toFixed(1)}%`,
       `테마당 최대 ${(Number(risk.max_theme_exposure_ratio ?? 0) * 100).toFixed(1)}%`,
       `국가당 최대 ${(Number(risk.max_country_exposure_ratio ?? 0) * 100).toFixed(1)}%`,
@@ -631,6 +632,10 @@ window.ui = {
       items.push(
         `참고용 제안(실주문 아님): 기준자금 ${Number(risk.reference_capital_basis || 0).toLocaleString()}, 1회 진입 ${Number(risk.recommended_entry_ratio_pct || 0).toFixed(1)}% (~${Number(risk.recommended_entry_amount || 0).toLocaleString()}), 분할매수 ${JSON.stringify(risk.recommended_buy_split_ratios || [])}, 재분석락 ${Number(risk.reanalysis_lock_minutes || 0)}분`
       );
+      const buyCapital = Array.isArray(risk.recommended_buy_split_amounts_capital_basis) ? risk.recommended_buy_split_amounts_capital_basis : [];
+      if (buyCapital.length) {
+        items.push(`분할매수 금액(자본기준): ${buyCapital.map((v) => Number(v || 0).toLocaleString()).join(" / ")}`);
+      }
     }
     if (backtestReport) {
       items.push(`백테스트 요약: ${backtestReport.summary || "-"}`);
@@ -807,6 +812,12 @@ window.ui = {
     const stateBadge = this.escapeHtml(row.state_badge || row.recommendation_state || "-");
     const blocked = this.escapeHtml(row.blocked_reason || "");
     const quality = Boolean(row.quality_degraded);
+    const strategyEvidence = row.strategy_evidence || {};
+    const strategySummary = this.escapeHtml(row.strategy_evidence_summary || strategyEvidence.summary || row.state_reason || "-");
+    const strategyTags = Array.isArray(row.strategy_evidence_tags)
+      ? row.strategy_evidence_tags.slice(0, 5)
+      : (Array.isArray(strategyEvidence.tags) ? strategyEvidence.tags.slice(0, 5) : []);
+    const riskGuide = row.risk_guidance || {};
     let breakdown = {};
     try {
       breakdown = row.probability_reason_breakdown_json ? JSON.parse(row.probability_reason_breakdown_json) : {};
@@ -818,6 +829,9 @@ window.ui = {
     const metricLine = row.strategy_key === "SCALP"
       ? `호/악 ${Number(row.good_news_probability ?? 0).toFixed(3)} / ${Number(row.bad_news_probability ?? 0).toFixed(3)}`
       : `결합 ${Number(row.combined_confidence ?? 0).toFixed(3)} · 주간 ${Number(row.weekly_context_score ?? 0).toFixed(3)}`;
+    const guideLine = row.strategy_key === "CHART_RESPONSE"
+      ? `평단가 ${Boolean(riskGuide.avg_down_allowed) ? "허용" : "보류"} · 단계 ${Number(riskGuide.avg_down_stage || 0)} · 다음비중 ${Number(riskGuide.avg_down_next_buy_ratio || 0).toFixed(3)}`
+      : (Boolean(riskGuide.buy_lock_active) ? "BUY_LOCK 활성(재분석 전 매수 금지)" : "");
     return `
       <button type="button" class="assistant-signal-row ${selected ? "selected" : ""}" data-signal-id="${signalId}" data-asset-code="${assetCode}">
         <div class="assistant-signal-row-top">
@@ -830,9 +844,12 @@ window.ui = {
           ${quality ? '<span class="badge">품질주의</span>' : ""}
           ${Boolean(row.dedup_applied) ? '<span class="badge">중복억제</span>' : ""}
           ${dataState ? `<span class="badge">상태 ${dataState}</span>` : ""}
+          ${strategyTags.map((tag) => `<span class="badge">${this.escapeHtml(String(tag))}</span>`).join("")}
         </div>
         <div class="assistant-signal-row-desc">${this.escapeHtml(row.panel_purpose || row.state_reason || "-")}</div>
         <div class="assistant-signal-row-desc">${this.escapeHtml(row.primary_metric_label || "핵심지표")} ${primaryMetricValue} · ${this.escapeHtml(metricLine)}</div>
+        <div class="assistant-signal-row-desc">${strategySummary}</div>
+        ${guideLine ? `<div class="assistant-signal-row-desc">${this.escapeHtml(guideLine)}</div>` : ""}
         ${blocked ? `<div class="assistant-signal-row-desc warn">차단사유: ${blocked}</div>` : ""}
       </button>
     `;
@@ -842,10 +859,24 @@ window.ui = {
     if (!risk) {
       return '<div class="empty-box">리스크/자금관리 데이터 없음</div>';
     }
+    const positionExposure = Array.isArray(risk.position_exposure) ? risk.position_exposure : [];
+    const themeExposure = Array.isArray(risk.theme_exposure) ? risk.theme_exposure : [];
+    const countryExposure = Array.isArray(risk.country_exposure) ? risk.country_exposure : [];
+    const topBlockedReasons = Array.isArray(risk.top_blocked_reasons) ? risk.top_blocked_reasons : [];
+    const pendingAssets = Array.isArray(risk.reanalysis_pending_assets) ? risk.reanalysis_pending_assets : [];
+    const buyCapital = Array.isArray(risk.recommended_buy_split_amounts_capital_basis) ? risk.recommended_buy_split_amounts_capital_basis : [];
+    const buyCash = Array.isArray(risk.recommended_buy_split_amounts_cash_basis) ? risk.recommended_buy_split_amounts_cash_basis : [];
+    const sellInvested = Array.isArray(risk.recommended_sell_split_amounts_invested_basis) ? risk.recommended_sell_split_amounts_invested_basis : [];
+    const buyRatios = Array.isArray(risk.recommended_buy_split_ratios) ? risk.recommended_buy_split_ratios : [];
+    const sellRatios = Array.isArray(risk.recommended_sell_split_ratios) ? risk.recommended_sell_split_ratios : [];
+
     const summaryLines = [
       `기준자금 ${Number(risk.reference_capital_basis || risk.capital_total || 0).toLocaleString()} (참고용)`,
+      `위험도 ${this.escapeHtml(risk.portfolio_risk_level || "UNKNOWN")} / heat ${Number(risk.portfolio_heat_score || 0).toFixed(3)}`,
+      `현금 ${Number(risk.cash_remaining || 0).toLocaleString()} (${this.pct(risk.available_cash_ratio || 0)}) / 잔여 슬롯 ${Number(risk.remaining_open_position_slots || 0)}개`,
       `1회 진입 ${Number(risk.recommended_entry_ratio_pct || 0).toFixed(1)}% / 약 ${Number(risk.recommended_entry_amount || 0).toLocaleString()}`,
       `분할매수 비중 ${this.escapeHtml(JSON.stringify(risk.recommended_buy_split_ratios || []))}`,
+      `분할매도 비중 ${this.escapeHtml(JSON.stringify(risk.recommended_sell_split_ratios || []))}`,
       `익절 ${Number(risk.take_profit_pct || 0)}% / 손절 ${Number(risk.stop_loss_pct || 0)}%`,
       `재분석 락 ${Number(risk.reanalysis_lock_minutes || 0)}분`,
       `종목당 최대 ${(Number(risk.max_position_ratio_per_asset || 0) * 100).toFixed(1)}%`,
@@ -856,12 +887,26 @@ window.ui = {
       ...(Array.isArray(risk.position_limit_warning_assets) ? risk.position_limit_warning_assets.map((v) => `비중경고 ${v}`) : []),
       ...(Array.isArray(risk.data_quality_degraded_assets) ? risk.data_quality_degraded_assets.map((v) => `품질저하 ${v}`) : [])
     ];
+    const exposureRows = [
+      ...positionExposure.slice(0, 3).map((row) => `종목 ${row.key || "-"} ${(Number(row.ratio || 0) * 100).toFixed(1)}% (${Number(row.amount || 0).toLocaleString()})`),
+      ...themeExposure.slice(0, 2).map((row) => `테마 ${row.key || "-"} ${(Number(row.ratio || 0) * 100).toFixed(1)}%`),
+      ...countryExposure.slice(0, 2).map((row) => `국가 ${row.key || "-"} ${(Number(row.ratio || 0) * 100).toFixed(1)}%`)
+    ];
+    const splitGuideRows = [];
+    buyRatios.forEach((ratio, idx) => {
+      splitGuideRows.push(`분할매수 ${idx + 1}차 ${Number(ratio || 0)}% · 자본기준 ${Number(buyCapital[idx] || 0).toLocaleString()} · 현금기준 ${Number(buyCash[idx] || 0).toLocaleString()}`);
+    });
+    sellRatios.forEach((ratio, idx) => {
+      splitGuideRows.push(`분할매도 ${idx + 1}차 ${Number(ratio || 0)}% · 투자중기준 ${Number(sellInvested[idx] || 0).toLocaleString()}`);
+    });
 
     const lockLines = (Array.isArray(locks) ? locks : []).slice(0, 6).map((row) => {
       const asset = this.escapeHtml(row.asset_name || row.asset_code || "-");
       const reason = this.escapeHtml(row.lock_reason || "-");
       const until = row.lock_until ? new Date(row.lock_until).toLocaleString() : "미정";
-      return `<div class="assistant-sub-row">${asset} · ${reason} · ${until}</div>`;
+      const pending = row.reanalysis_pending ? " · 재분석대기" : "";
+      const remain = row.remaining_lock_minutes == null ? "" : ` · 남은락 ${Number(row.remaining_lock_minutes || 0)}분`;
+      return `<div class="assistant-sub-row">${asset} · ${reason}${pending}${remain} · ${until}</div>`;
     });
 
     return `
@@ -869,10 +914,28 @@ window.ui = {
         ${summaryLines.map((line) => `<div class="assistant-sub-row">${this.escapeHtml(line)}</div>`).join("")}
       </div>
       <div class="assistant-sub-section">
+        <div class="assistant-sub-title">분할매수/분할매도 참고 가이드 (실주문 아님)</div>
+        ${splitGuideRows.length
+          ? splitGuideRows.slice(0, 8).map((line) => `<div class="assistant-sub-row">${this.escapeHtml(line)}</div>`).join("")
+          : '<div class="assistant-sub-row">가이드 계산값 없음</div>'}
+      </div>
+      <div class="assistant-sub-section">
+        <div class="assistant-sub-title">노출/집중도 현황</div>
+        ${exposureRows.length
+          ? exposureRows.map((line) => `<div class="assistant-sub-row">${this.escapeHtml(line)}</div>`).join("")
+          : '<div class="assistant-sub-row">포지션 데이터 없음</div>'}
+        ${topBlockedReasons.length
+          ? topBlockedReasons.slice(0, 5).map((line) => `<div class="assistant-sub-row warn">전략 차단 사유 ${this.escapeHtml(String(line))}</div>`).join("")
+          : ""}
+      </div>
+      <div class="assistant-sub-section">
         <div class="assistant-sub-title">경고/차단 신호</div>
         ${warnings.length
           ? warnings.slice(0, 8).map((line) => `<div class="assistant-sub-row warn">${this.escapeHtml(line)}</div>`).join("")
           : '<div class="assistant-sub-row">현재 주요 경고 없음</div>'}
+        ${pendingAssets.length
+          ? pendingAssets.slice(0, 5).map((line) => `<div class="assistant-sub-row warn">${this.escapeHtml(String(line))}</div>`).join("")
+          : ""}
       </div>
       <div class="assistant-sub-section">
         <div class="assistant-sub-title">BUY_LOCK / 재분석 대기</div>
@@ -911,8 +974,13 @@ window.ui = {
       ragRefs = [];
     }
     const assistant = detail.assistant_rag || {};
+    const strategyEvidence = detail.strategy_evidence || {};
+    const strategyComparison = Array.isArray(detail.strategy_comparison) ? detail.strategy_comparison : [];
+    const riskGuide = detail.risk_guidance || {};
     const newsEvidence = Array.isArray(detail.news_evidence) ? detail.news_evidence : [];
+    const chartEvidence = Array.isArray(detail.chart_evidence) ? detail.chart_evidence : [];
     const priceEvidence = Array.isArray(detail.price_evidence) ? detail.price_evidence : [];
+    const volumeEvidence = Array.isArray(detail.volume_evidence) ? detail.volume_evidence : [];
     const riskEvidence = Array.isArray(detail.risk_evidence) ? detail.risk_evidence : [];
     const missing = Array.isArray(detail.missing_requirements) ? detail.missing_requirements : [];
     const changes = Array.isArray(detail.change_conditions) ? detail.change_conditions : [];
@@ -926,6 +994,21 @@ window.ui = {
       `손절 ${Number(risk.stop_loss_pct || 0)}%`,
       `재분석 락 ${Number(risk.reanalysis_lock_minutes || 0)}분`
     ];
+    const strategyHelper = [
+      `현재 전략 ${this.escapeHtml(String(strategyEvidence.strategy_key || "-"))} · ${this.escapeHtml(String(strategyEvidence.signal_window || "-"))}`,
+      `전략요약 ${this.escapeHtml(String(strategyEvidence.summary || "-"))}`,
+      `전략태그 ${this.escapeHtml((Array.isArray(strategyEvidence.tags) ? strategyEvidence.tags : []).join(" / ") || "-")}`,
+      `평단가 대응 ${Boolean(riskGuide.avg_down_allowed) ? "허용" : "보류"} · 단계 ${Number(riskGuide.avg_down_stage || 0)} · 다음비중 ${Number(riskGuide.avg_down_next_buy_ratio || 0).toFixed(3)}`,
+      `BUY_LOCK ${Boolean(riskGuide.buy_lock_active) ? "활성" : "비활성"}${riskGuide.reanalysis_lock_until ? ` · 해제예정 ${new Date(riskGuide.reanalysis_lock_until).toLocaleString()}` : ""}`
+    ];
+    const strategyComparisonHtml = strategyComparison.length
+      ? strategyComparison.map((row) => {
+        const present = Boolean(row.present);
+        const tags = Array.isArray(row.tags) ? row.tags.slice(0, 4).join(" / ") : "";
+        const metric = `${row.primary_metric_label || "지표"} ${Number(row.primary_metric_value || 0).toFixed(3)} / 결합 ${Number(row.combined_confidence || 0).toFixed(3)}`;
+        return `<div class="assistant-detail-line">${this.escapeHtml(String(row.strategy_key || "-"))}: ${this.escapeHtml(present ? `${row.action || "WATCH"} · ${row.summary || "-"} · ${metric}` : (row.summary || "결과 없음"))}${tags ? ` · ${this.escapeHtml(tags)}` : ""}</div>`;
+      }).join("")
+      : '<div class="assistant-detail-line">전략 비교 데이터 없음</div>';
 
     $("#assistant-detail-meta").text(
       `${this.escapeHtml(detail.asset_name || detail.asset_code || "-")} · ${this.escapeHtml(detail.action || "WATCH")} · trace_id=${this.escapeHtml(traceId || "")}`
@@ -944,12 +1027,25 @@ window.ui = {
           ${newsEvidence.length ? newsEvidence.slice(0, 8).map((line) => `<div class="assistant-detail-line">${this.escapeHtml(line)}</div>`).join("") : '<div class="assistant-detail-line">뉴스 근거 없음</div>'}
         </section>
         <section class="assistant-detail-card">
+          <h4>차트/압력 근거</h4>
+          ${chartEvidence.length ? chartEvidence.slice(0, 8).map((line) => `<div class="assistant-detail-line">${this.escapeHtml(line)}</div>`).join("") : '<div class="assistant-detail-line">차트 근거 없음</div>'}
+          ${volumeEvidence.length ? volumeEvidence.slice(0, 6).map((line) => `<div class="assistant-detail-line">${this.escapeHtml(line)}</div>`).join("") : ""}
+        </section>
+        <section class="assistant-detail-card">
           <h4>가격 근거</h4>
           ${priceEvidence.length ? priceEvidence.slice(0, 8).map((line) => `<div class="assistant-detail-line">${this.escapeHtml(line)}</div>`).join("") : '<div class="assistant-detail-line">가격 근거 없음</div>'}
         </section>
         <section class="assistant-detail-card">
           <h4>리스크 근거</h4>
           ${riskEvidence.length ? riskEvidence.slice(0, 8).map((line) => `<div class="assistant-detail-line">${this.escapeHtml(line)}</div>`).join("") : '<div class="assistant-detail-line">리스크 근거 없음</div>'}
+        </section>
+        <section class="assistant-detail-card">
+          <h4>전략별 판단 비교 (동일 종목)</h4>
+          ${strategyComparisonHtml}
+        </section>
+        <section class="assistant-detail-card">
+          <h4>전략/자금관리 가이드</h4>
+          ${strategyHelper.map((line) => `<div class="assistant-detail-line">${line}</div>`).join("")}
         </section>
         <section class="assistant-detail-card">
           <h4>무엇이 부족한지 / 바뀔 조건</h4>

@@ -5,6 +5,7 @@ import com.wangbyul.gnd.core.domain.SignalActionType;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import lombok.Builder;
 import lombok.Getter;
 
@@ -79,6 +80,15 @@ public class SignalDetailDto {
 
     @JsonProperty("assistant_rag")
     private AssistantRagInsightDto assistantRag;
+
+    @JsonProperty("strategy_evidence")
+    private Map<String, Object> strategyEvidence;
+
+    @JsonProperty("strategy_comparison")
+    private List<Map<String, Object>> strategyComparison;
+
+    @JsonProperty("risk_guidance")
+    private Map<String, Object> riskGuidance;
 
     @JsonProperty("news_evidence")
     private List<String> newsEvidence;

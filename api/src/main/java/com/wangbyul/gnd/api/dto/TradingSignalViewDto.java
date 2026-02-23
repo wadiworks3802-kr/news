@@ -6,6 +6,7 @@ import com.wangbyul.gnd.core.domain.SignalActionType;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import lombok.Builder;
 import lombok.Getter;
 
@@ -139,6 +140,18 @@ public class TradingSignalViewDto {
 
     @JsonProperty("state_reason")
     private String stateReason;
+
+    @JsonProperty("strategy_evidence_summary")
+    private String strategyEvidenceSummary;
+
+    @JsonProperty("strategy_evidence_tags")
+    private List<String> strategyEvidenceTags;
+
+    @JsonProperty("strategy_evidence")
+    private Map<String, Object> strategyEvidence;
+
+    @JsonProperty("risk_guidance")
+    private Map<String, Object> riskGuidance;
 
     @JsonProperty("recommendation_state")
     private String recommendationState;

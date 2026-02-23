@@ -295,10 +295,14 @@ public class TradingSignalEngineService {
         List<String> riskChecks = parseRiskChecks(signal.getRiskChecks());
         PressureAnalysisDto pressure = getPressureAnalysis(signal.getAssetCode());
         Map<String, Object> scalpBreakdown = parseJsonMap(signal.getProbabilityReasonBreakdownJson());
+        Map<String, Object> reasonRoot = parseJsonMap(signal.getReasonJson());
         List<String> missingRequirements = stringListField(scalpBreakdown, "missing_requirements");
         List<String> changeConditions = stringListField(scalpBreakdown, "change_conditions");
         String explainText = firstNonBlank(signal.getExplainText(), textField(scalpBreakdown, "explain_text"));
         String decisionWhy = buildDecisionWhy(signal, explainText, riskChecks, missingRequirements);
+        Map<String, Object> strategyEvidence = buildStrategyEvidence(signal, asset, null, reasonRoot, scalpBreakdown);
+        List<Map<String, Object>> strategyComparison = buildStrategyComparison(signal.getAssetCode(), asset);
+        Map<String, Object> riskGuidance = buildRiskGuidance(signal);
         AssistantRagService.SignalDetailAssistResult assistantAssist = assistantRagService.assistSignalDetail(
                 signal,
                 asset,
@@ -331,8 +335,11 @@ public class TradingSignalEngineService {
                 .dedupResultJson(signal.getDedupResultJson())
                 .ragContextRefsJson(ragContextRefsJson)
                 .assistantRag(assistantAssist == null ? null : assistantAssist.insight())
+                .strategyEvidence(strategyEvidence)
+                .strategyComparison(strategyComparison)
+                .riskGuidance(riskGuidance)
                 .newsEvidence(buildNewsEvidence(signal, scalpBreakdown))
-                .chartEvidence(List.of("MA/추세/변동성/거래량 기반"))
+                .chartEvidence(buildChartEvidence(signal, reasonRoot))
                 .priceEvidence(buildPriceEvidence(signal, scalpBreakdown))
                 .volumeEvidence(buildVolumeEvidence(signal, scalpBreakdown))
                 .riskEvidence(buildRiskEvidence(signal, riskChecks))
@@ -863,6 +870,9 @@ public class TradingSignalEngineService {
         String assetName = asset != null && asset.getAssetName() != null ? asset.getAssetName()
                 : assetUniverseRepository.findById(signal.getAssetCode()).map(AssetUniverseEntity::getAssetName).orElse("-");
         Map<String, Object> scalpBreakdown = parseJsonMap(signal.getProbabilityReasonBreakdownJson());
+        Map<String, Object> reasonRoot = parseJsonMap(signal.getReasonJson());
+        Map<String, Object> strategyEvidence = buildStrategyEvidence(signal, asset, panelMeta, reasonRoot, scalpBreakdown);
+        List<String> strategyEvidenceTags = strategyEvidenceTags(strategyEvidence);
         return TradingSignalViewDto.builder()
                 .signalId(signal.getId())
                 .assetCode(signal.getAssetCode())
@@ -906,11 +916,345 @@ public class TradingSignalEngineService {
                 .primaryMetricValue(panelMeta == null ? null : panelMeta.primaryMetricValue())
                 .stateBadge(panelMeta == null ? null : panelMeta.stateBadge())
                 .stateReason(panelMeta == null ? null : panelMeta.stateReason())
+                .strategyEvidenceSummary(strategyEvidenceSummary(strategyEvidence))
+                .strategyEvidenceTags(strategyEvidenceTags)
+                .strategyEvidence(strategyEvidence)
+                .riskGuidance(buildRiskGuidance(signal))
                 .recommendationState(panelMeta == null ? null : panelMeta.recommendationState())
                 .qualityDegraded(panelMeta == null ? null : panelMeta.qualityDegraded())
                 .sortBasis(panelMeta == null ? null : panelMeta.sortBasis())
                 .generatedAt(signal.getGeneratedAt())
                 .build();
+    }
+
+    private Map<String, Object> buildStrategyEvidence(
+            TradingSignalEntity signal,
+            AssetUniverseEntity asset,
+            PanelSelectionMeta panelMeta,
+            Map<String, Object> reasonRoot,
+            Map<String, Object> scalpBreakdown) {
+        Map<String, Object> root = reasonRoot == null ? Map.of() : reasonRoot;
+        Map<String, Object> scalp = nestedMapField(root, "scalp");
+        Map<String, Object> chart = nestedMapField(root, "chart_position");
+        Map<String, Object> trend = nestedMapField(root, "market_trend");
+        Map<String, Object> discovery = nestedMapField(root, "discovery");
+        Map<String, Object> weekly = nestedMapField(root, "weekly_context");
+        Map<String, Object> pressure = nestedMapField(root, "pressure");
+        Map<String, Object> risk = nestedMapField(root, "risk");
+        Map<String, Object> scalpProbability = nestedMapField(scalp, "probability_reason_breakdown");
+        if (scalpBreakdown != null && !scalpBreakdown.isEmpty()) {
+            scalpProbability = scalpBreakdown;
+        }
+        String strategyKey = panelMeta != null && !isBlank(panelMeta.strategyKey())
+                ? panelMeta.strategyKey()
+                : inferStrategyKey(signal);
+
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("strategy_key", strategyKey);
+        evidence.put("signal_window", signal == null ? null : signal.getSignalWindow());
+        evidence.put("action", signal == null || signal.getAction() == null ? null : signal.getAction().name());
+        evidence.put("panel_purpose", panelMeta == null ? null : panelMeta.panelPurpose());
+        evidence.put("combined_confidence", signal == null ? null : scale(signal.getCombinedConfidence()));
+        evidence.put("market_regime", signal == null || signal.getMarketRegime() == null ? null : signal.getMarketRegime().name());
+        evidence.put("blocked_reason", signal == null ? null : signal.getBlockedReason());
+        evidence.put("analysis_state", textField(scalpProbability, "analysis_state"));
+        evidence.put("data_state", textField(scalpProbability, "data_state"));
+        evidence.put("fusion_inputs", buildFusionInputFlags(strategyKey));
+
+        List<String> tags = new ArrayList<>();
+        String summary;
+        switch (strategyKey) {
+            case "SCALP" -> {
+                Object matched = mapField(scalp, "matched_news_count", mapField(scalpProbability, "matched_news_count", 0));
+                evidence.put("primary_metric_label", "단타점수");
+                evidence.put("primary_metric_value", scale(signal == null ? null : signal.getScalpSignalScore()));
+                evidence.put("good_news_probability", scale(signal == null ? null : signal.getGoodNewsProbability()));
+                evidence.put("bad_news_probability", scale(signal == null ? null : signal.getBadNewsProbability()));
+                evidence.put("news_confidence", scale(signal == null ? null : signal.getNewsConfidence()));
+                evidence.put("matched_news_count", matched);
+                evidence.put("analysis_state", textField(scalpProbability, "analysis_state"));
+                evidence.put("data_state", textField(scalpProbability, "data_state"));
+                if (!isBlank(textField(scalpProbability, "analysis_state"))) {
+                    tags.add(textField(scalpProbability, "analysis_state"));
+                }
+                if (!isBlank(textField(scalpProbability, "data_state"))) {
+                    tags.add(textField(scalpProbability, "data_state"));
+                }
+                tags.add("NEWS");
+                tags.add("CHART_FUSION");
+                summary = "뉴스 " + String.valueOf(matched == null ? 0 : matched)
+                        + "건 · 호/악 "
+                        + scale(signal == null ? null : signal.getGoodNewsProbability()) + "/"
+                        + scale(signal == null ? null : signal.getBadNewsProbability())
+                        + " · 단타점수 " + scale(signal == null ? null : signal.getScalpSignalScore());
+            }
+            case "SWING" -> {
+                evidence.put("primary_metric_label", "스윙점수");
+                evidence.put("primary_metric_value", scale(signal == null ? null : signal.getSwingSignalScore()));
+                evidence.put("swing_signal_score", scale(signal == null ? null : signal.getSwingSignalScore()));
+                evidence.put("weekly_context_score", scale(signal == null ? null : signal.getWeeklyContextScore()));
+                evidence.put("theme_strength_score", decimalField(trend, "theme_strength_score"));
+                evidence.put("market_regime", textField(trend, "market_regime"));
+                tags.add("NEWS");
+                tags.add("CHART");
+                tags.add("WEEKLY");
+                if (!isBlank(textField(trend, "market_regime"))) {
+                    tags.add("REGIME:" + textField(trend, "market_regime"));
+                }
+                summary = "주간컨텍스트 " + scale(signal == null ? null : signal.getWeeklyContextScore())
+                        + " · 스윙점수 " + scale(signal == null ? null : signal.getSwingSignalScore())
+                        + " · 레짐 " + safeString(textField(trend, "market_regime"), "MIXED");
+            }
+            case "CHART_RESPONSE" -> {
+                boolean volumeSame = boolField(pressure, "volume_regime_same")
+                        || Boolean.TRUE.equals(signal == null ? null : signal.getVolumeRegimeSame());
+                boolean sellDetected = boolField(pressure, "sell_pressure_detected")
+                        || Boolean.TRUE.equals(signal == null ? null : signal.getSellPressureDetected());
+                boolean buyDetected = boolField(pressure, "buy_pressure_detected")
+                        || Boolean.TRUE.equals(signal == null ? null : signal.getBuyPressureDetected());
+                boolean sellNegative = boolField(pressure, "sell_pressure_is_negative")
+                        || Boolean.TRUE.equals(signal == null ? null : signal.getSellPressureIsNegative());
+                boolean buyPositive = boolField(pressure, "buy_pressure_is_positive")
+                        || Boolean.TRUE.equals(signal == null ? null : signal.getBuyPressureIsPositive());
+                boolean neutralized = volumeSame && (sellDetected || buyDetected) && !sellNegative && !buyPositive;
+
+                evidence.put("primary_metric_label", "포지션관리");
+                evidence.put("primary_metric_value", scale(signal == null ? null : signal.getPositionManagementSignal()));
+                evidence.put("position_management_signal", scale(signal == null ? null : signal.getPositionManagementSignal()));
+                evidence.put("chart_confidence", scale(signal == null ? null : signal.getChartConfidence()));
+                evidence.put("avg_down_allowed", signal == null ? null : signal.getAvgDownAllowed());
+                evidence.put("avg_down_stage", signal == null ? null : signal.getAvgDownStage());
+                evidence.put("avg_down_next_buy_ratio", scale(signal == null ? null : signal.getAvgDownNextBuyRatio()));
+                evidence.put("avg_down_reason", signal == null ? null : signal.getAvgDownReason());
+                evidence.put("pressure", Map.of(
+                        "sell_pressure_detected", sellDetected,
+                        "sell_pressure_is_negative", sellNegative,
+                        "buy_pressure_detected", buyDetected,
+                        "buy_pressure_is_positive", buyPositive,
+                        "volume_regime_same", volumeSame,
+                        "neutralized_by_volume_same", neutralized));
+                tags.add("CHART");
+                tags.add("PRESSURE");
+                tags.add("NEWS_GUARD");
+                if (neutralized) {
+                    tags.add("VOLUME_SAME_NEUTRALIZED");
+                }
+                if (Boolean.TRUE.equals(signal == null ? null : signal.getAvgDownAllowed())) {
+                    tags.add("AVG_DOWN_ALLOWED");
+                }
+                summary = "포지션관리 " + scale(signal == null ? null : signal.getPositionManagementSignal())
+                        + " · 차트신뢰 " + scale(signal == null ? null : signal.getChartConfidence())
+                        + " · 평단가단계 " + (signal == null || signal.getAvgDownStage() == null ? 0 : signal.getAvgDownStage())
+                        + (neutralized ? " · 압력중립(거래량 동일)" : "");
+            }
+            case "DISCOVERY" -> {
+                Object rank = mapField(discovery, "candidate_rank", null);
+                evidence.put("primary_metric_label", "발굴점수");
+                evidence.put("primary_metric_value", scale(signal == null ? null : signal.getDiscoveryScore()));
+                evidence.put("discovery_score", scale(signal == null ? null : signal.getDiscoveryScore()));
+                evidence.put("candidate_rank", rank);
+                evidence.put("candidate_reason_json", textField(discovery, "candidate_reason_json"));
+                tags.add("THEME");
+                tags.add("LONG_TERM");
+                tags.add("NEWS_CHART_FUSION");
+                summary = "발굴점수 " + scale(signal == null ? null : signal.getDiscoveryScore())
+                        + (rank == null ? "" : " · 후보순위 " + rank);
+            }
+            default -> {
+                evidence.put("primary_metric_label", panelMeta == null ? "점수" : panelMeta.primaryMetricLabel());
+                evidence.put("primary_metric_value", panelMeta == null ? BigDecimal.ZERO : panelMeta.primaryMetricValue());
+                tags.add("FUSION");
+                summary = "결합신뢰 " + scale(signal == null ? null : signal.getCombinedConfidence());
+            }
+        }
+        if (signal != null && signal.getBlockedReason() != null && !signal.getBlockedReason().isBlank()) {
+            tags.add("BLOCKED");
+        }
+        if (asset != null && !Boolean.TRUE.equals(asset.getIsTradeEnabled())) {
+            tags.add("TRADE_DISABLED");
+        }
+        evidence.put("tags", tags.stream().distinct().toList());
+        evidence.put("summary", summary);
+        return evidence;
+    }
+
+    private Map<String, Object> buildFusionInputFlags(String strategyKey) {
+        String key = strategyKey == null ? "UNKNOWN" : strategyKey.toUpperCase(Locale.ROOT);
+        return switch (key) {
+            case "SCALP" -> Map.of(
+                    "uses_news", true,
+                    "uses_chart", true,
+                    "uses_pressure", true,
+                    "uses_weekly_context", true,
+                    "mode", "news_first_with_chart_guard");
+            case "SWING" -> Map.of(
+                    "uses_news", true,
+                    "uses_chart", true,
+                    "uses_pressure", false,
+                    "uses_weekly_context", true,
+                    "mode", "weekly_context_fusion");
+            case "CHART_RESPONSE" -> Map.of(
+                    "uses_news", true,
+                    "uses_chart", true,
+                    "uses_pressure", true,
+                    "uses_weekly_context", true,
+                    "mode", "chart_response_with_news_guard");
+            case "DISCOVERY" -> Map.of(
+                    "uses_news", true,
+                    "uses_chart", true,
+                    "uses_pressure", false,
+                    "uses_weekly_context", true,
+                    "mode", "long_term_discovery_fusion");
+            default -> Map.of(
+                    "uses_news", true,
+                    "uses_chart", true,
+                    "uses_pressure", true,
+                    "uses_weekly_context", true,
+                    "mode", "fusion");
+        };
+    }
+
+    private String strategyEvidenceSummary(Map<String, Object> strategyEvidence) {
+        String summary = textField(strategyEvidence, "summary");
+        return summary == null ? "" : summary;
+    }
+
+    private List<String> strategyEvidenceTags(Map<String, Object> strategyEvidence) {
+        return stringListField(strategyEvidence, "tags");
+    }
+
+    private Map<String, Object> buildRiskGuidance(TradingSignalEntity signal) {
+        Map<String, Object> guide = new LinkedHashMap<>();
+        BigDecimal capitalValue = riskPolicyService.effectiveCapitalTotal();
+        BigDecimal capital = capitalValue == null ? BigDecimal.ZERO : capitalValue;
+        BigDecimal nextBuyRatio = signal == null || signal.getAvgDownNextBuyRatio() == null
+                ? BigDecimal.ZERO
+                : signal.getAvgDownNextBuyRatio();
+        BigDecimal nextBuyAmount = capital.multiply(nextBuyRatio).setScale(2, RoundingMode.HALF_UP);
+        guide.put("reference_only", true);
+        guide.put("capital_total", capital);
+        guide.put("buy_split_ratios", riskPolicyService.effectiveBuySplitRules());
+        guide.put("sell_split_ratios", riskPolicyService.effectiveSellSplitRules());
+        guide.put("take_profit_pct", riskPolicyService.effectiveTakeProfitPct());
+        guide.put("stop_loss_pct", riskPolicyService.effectiveStopLossPct());
+        guide.put("reanalysis_lock_minutes", riskPolicyService.effectiveReanalysisLockMinutes());
+        guide.put("buy_lock_active", signal != null
+                && (signal.getAction() == SignalActionType.BUY_LOCK || Boolean.TRUE.equals(signal.getReanalysisLockRequired())));
+        guide.put("reanalysis_lock_required", signal == null ? false : Boolean.TRUE.equals(signal.getReanalysisLockRequired()));
+        guide.put("reanalysis_lock_until", signal == null ? null : signal.getReanalysisLockUntil());
+        guide.put("avg_down_allowed", signal == null ? null : signal.getAvgDownAllowed());
+        guide.put("avg_down_stage", signal == null ? null : signal.getAvgDownStage());
+        guide.put("avg_down_reason", signal == null ? null : signal.getAvgDownReason());
+        guide.put("avg_down_next_buy_ratio", scale(nextBuyRatio));
+        guide.put("avg_down_next_buy_amount_reference", nextBuyAmount);
+        return guide;
+    }
+
+    private List<Map<String, Object>> buildStrategyComparison(String assetCode, AssetUniverseEntity asset) {
+        if (assetCode == null || assetCode.isBlank()) {
+            return List.of();
+        }
+        List<TradingSignalEntity> recent = tradingSignalRepository.findTop200ByAssetCodeOrderByGeneratedAtDesc(assetCode);
+        Map<String, TradingSignalEntity> byWindow = new LinkedHashMap<>();
+        for (TradingSignalEntity row : recent) {
+            if (row == null || row.getSignalWindow() == null) {
+                continue;
+            }
+            if (!byWindow.containsKey(row.getSignalWindow()) && isKnownStrategyWindow(row.getSignalWindow())) {
+                byWindow.put(row.getSignalWindow(), row);
+            }
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        rows.add(toStrategyComparisonRow("SCALP", "1h", byWindow.get("1h"), asset));
+        rows.add(toStrategyComparisonRow("SWING", "1w", byWindow.get("1w"), asset));
+        rows.add(toStrategyComparisonRow("CHART_RESPONSE", "1m", byWindow.get("1m"), asset));
+        rows.add(toStrategyComparisonRow("DISCOVERY", "6m", byWindow.get("6m"), asset));
+        return rows;
+    }
+
+    private Map<String, Object> toStrategyComparisonRow(
+            String strategyKey,
+            String signalWindow,
+            TradingSignalEntity signal,
+            AssetUniverseEntity asset) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("strategy_key", strategyKey);
+        row.put("signal_window", signalWindow);
+        if (signal == null) {
+            row.put("present", false);
+            row.put("summary", "최근 전략 결과 없음");
+            row.put("tags", List.of("MISSING_SIGNAL"));
+            return row;
+        }
+        PanelStrategyEvaluation eval = evaluatePanelStrategy(signal, asset);
+        Map<String, Object> scalpBreakdown = parseJsonMap(signal.getProbabilityReasonBreakdownJson());
+        Map<String, Object> reasonRoot = parseJsonMap(signal.getReasonJson());
+        Map<String, Object> evidence = buildStrategyEvidence(signal, asset, null, reasonRoot, scalpBreakdown);
+        row.put("present", true);
+        row.put("signal_id", signal.getId());
+        row.put("action", signal.getAction() == null ? null : signal.getAction().name());
+        row.put("generated_at", signal.getGeneratedAt());
+        row.put("combined_confidence", scale(signal.getCombinedConfidence()));
+        row.put("primary_metric_label", eval == null ? textField(evidence, "primary_metric_label") : eval.primaryMetricLabel());
+        row.put("primary_metric_value", eval == null ? mapField(evidence, "primary_metric_value", null) : eval.primaryMetricValue());
+        row.put("state_badge", eval == null ? null : eval.stateBadge());
+        row.put("state_reason", eval == null ? null : eval.stateReason());
+        row.put("blocked_reason", signal.getBlockedReason());
+        row.put("analysis_state", textField(scalpBreakdown, "analysis_state"));
+        row.put("data_state", textField(scalpBreakdown, "data_state"));
+        row.put("summary", strategyEvidenceSummary(evidence));
+        row.put("tags", strategyEvidenceTags(evidence));
+        row.put("evidence", evidence);
+        row.put("risk_guidance", buildRiskGuidance(signal));
+        return row;
+    }
+
+    private PanelStrategyEvaluation evaluatePanelStrategy(TradingSignalEntity signal, AssetUniverseEntity asset) {
+        if (signal == null || signal.getSignalWindow() == null) {
+            return null;
+        }
+        return switch (signal.getSignalWindow()) {
+            case "1h" -> scalpStrategyService.evaluate(signal, asset);
+            case "1w" -> swingStrategyService.evaluate(signal, asset);
+            case "1m" -> chartResponseStrategyService.evaluate(signal, asset);
+            case "6m" -> discoveryStrategyService.evaluate(signal, asset);
+            default -> null;
+        };
+    }
+
+    private boolean isKnownStrategyWindow(String window) {
+        return Objects.equals("1h", window)
+                || Objects.equals("1w", window)
+                || Objects.equals("1m", window)
+                || Objects.equals("6m", window);
+    }
+
+    private String inferStrategyKey(TradingSignalEntity signal) {
+        if (signal == null || signal.getSignalWindow() == null) {
+            return "UNKNOWN";
+        }
+        return switch (signal.getSignalWindow()) {
+            case "1h" -> "SCALP";
+            case "1w" -> "SWING";
+            case "1m" -> "CHART_RESPONSE";
+            case "6m" -> "DISCOVERY";
+            default -> "OTHER";
+        };
+    }
+
+    private Map<String, Object> nestedMapField(Map<String, Object> map, String key) {
+        Object raw = mapField(map, key, Map.of());
+        if (raw instanceof Map<?, ?> rawMap) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+                result.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+            return result;
+        }
+        if (raw instanceof String rawText) {
+            return parseJsonMap(rawText);
+        }
+        return new LinkedHashMap<>();
     }
 
     private BigDecimal defaultRequestRatio() {
@@ -1210,6 +1554,17 @@ public class TradingSignalEngineService {
         }
     }
 
+    private boolean boolField(Map<String, Object> map, String key) {
+        Object value = mapField(map, key, null);
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value == null) {
+            return false;
+        }
+        return "true".equalsIgnoreCase(String.valueOf(value).trim());
+    }
+
     private String resolveSignalExplainText(
             SignalActionType action,
             Map<String, Object> scalpBreakdown,
@@ -1254,6 +1609,37 @@ public class TradingSignalEngineService {
         return rows;
     }
 
+    private List<String> buildChartEvidence(TradingSignalEntity signal, Map<String, Object> reasonRoot) {
+        List<String> rows = new ArrayList<>();
+        rows.add("차트 RULESET_V1 + 뉴스/압력 가드 결합");
+        Map<String, Object> root = reasonRoot == null ? Map.of() : reasonRoot;
+        Map<String, Object> chart = nestedMapField(root, "chart_position");
+        Map<String, Object> pressure = nestedMapField(root, "pressure");
+        if (signal != null) {
+            rows.add("차트신뢰 " + scale(signal.getChartConfidence()) + " / 포지션관리 " + scale(signal.getPositionManagementSignal()));
+            if (Boolean.TRUE.equals(signal.getAvgDownAllowed())) {
+                rows.add("평단가 대응 허용: 단계 " + (signal.getAvgDownStage() == null ? 0 : signal.getAvgDownStage())
+                        + ", 다음비중 " + scale(signal.getAvgDownNextBuyRatio()));
+            } else if (signal.getAvgDownReason() != null && !signal.getAvgDownReason().isBlank()) {
+                rows.add("평단가 대응 보류: " + signal.getAvgDownReason());
+            }
+        }
+        String riskWarning = textField(chart, "risk_warning");
+        if (riskWarning != null) {
+            rows.add("차트 리스크: " + riskWarning);
+        }
+        Map<String, Object> pressureReason = nestedMapField(pressure, "pressure_reason");
+        boolean neutralized = boolField(pressureReason, "auto_classification_suppressed_by_volume_same")
+                || (boolField(pressure, "volume_regime_same")
+                        && (boolField(pressure, "sell_pressure_detected") || boolField(pressure, "buy_pressure_detected"))
+                        && !boolField(pressure, "sell_pressure_is_negative")
+                        && !boolField(pressure, "buy_pressure_is_positive"));
+        if (neutralized) {
+            rows.add("연속 매수/매도는 감지됐지만 거래량 동일 구간으로 자동 호/악재 단정 보류");
+        }
+        return rows;
+    }
+
     private List<String> buildPriceEvidence(TradingSignalEntity signal, Map<String, Object> scalpBreakdown) {
         List<String> rows = new ArrayList<>();
         Map<String, Object> freshness = parseJsonMap(signal.getDataFreshnessJson());
@@ -1287,6 +1673,12 @@ public class TradingSignalEngineService {
         if (dedupApplied != null) {
             rows.add("중복기사 감점 적용: " + dedupApplied);
         }
+        Map<String, Object> pressure = parseJsonMap(signal.getPressureReasonJson());
+        if (!pressure.isEmpty()) {
+            rows.add("압력 탐지: 매도연속=" + boolField(pressure, "sell_pressure_detected")
+                    + ", 매수연속=" + boolField(pressure, "buy_pressure_detected")
+                    + ", 거래량동일=" + boolField(pressure, "volume_regime_same"));
+        }
         return rows;
     }
 
@@ -1298,6 +1690,15 @@ public class TradingSignalEngineService {
         }
         if (riskChecks != null && !riskChecks.isEmpty()) {
             rows.add("리스크 체크 " + riskChecks.size() + "건");
+        }
+        if (signal != null && Boolean.TRUE.equals(signal.getReanalysisLockRequired())) {
+            rows.add("BUY_LOCK/재분석 잠금 상태 또는 잠금 필요 플래그 존재");
+        }
+        if (signal != null && signal.getReanalysisLockUntil() != null) {
+            rows.add("재분석 잠금 해제 예정: " + signal.getReanalysisLockUntil());
+        }
+        if (signal != null && signal.getAvgDownReason() != null && !signal.getAvgDownReason().isBlank()) {
+            rows.add("평단가 정책 판정: " + signal.getAvgDownReason());
         }
         return rows;
     }

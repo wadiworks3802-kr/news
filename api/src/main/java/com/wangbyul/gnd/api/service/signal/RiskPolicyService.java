@@ -17,6 +17,7 @@ import com.wangbyul.gnd.core.repository.TradingSignalRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -140,15 +141,33 @@ public class RiskPolicyService {
         BigDecimal recommendedEntryAmount = capital.multiply(
                         recommendedEntryRatioPct.divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP))
                 .setScale(2, RoundingMode.HALF_UP);
+        int openPositions = (int) positions.stream()
+                .filter(position -> nvl(position.getQuantity()).compareTo(BigDecimal.ZERO) > 0)
+                .count();
+        int remainingSlots = Math.max(0, Math.max(1, effectiveMaxOpenPositions()) - openPositions);
+        BigDecimal availableCashRatio = ratio(cash.max(BigDecimal.ZERO), capital);
+        BigDecimal portfolioHeatScore = portfolioHeatScore(invested, capital, positionWarnings, diversificationWarnings);
+        String portfolioRiskLevel = portfolioRiskLevel(portfolioHeatScore, degradedAssets, locks);
+        List<String> topBlockedReasons = topBlockedReasons(strategySnapshot.blockedReasonDistribution());
+        List<String> reanalysisPendingAssets = locks.stream()
+                .filter(this::isReanalysisPending)
+                .map(this::lockSummaryLine)
+                .limit(10)
+                .toList();
+        List<BigDecimal> buySplitAmountsCapital = splitAmounts(capital, buySplits);
+        List<BigDecimal> buySplitAmountsCash = splitAmounts(cash.max(BigDecimal.ZERO), buySplits);
+        List<BigDecimal> sellSplitAmountsInvested = splitAmounts(invested.max(BigDecimal.ZERO), sellSplits);
 
         return PaperTradeRiskDto.builder()
                 .capitalTotal(capital)
                 .investedAmount(invested)
                 .cashRemaining(cash.max(BigDecimal.ZERO))
+                .availableCashRatio(availableCashRatio)
                 .maxPositionRatioPerAsset(effectiveMaxPositionRatioPerAsset())
                 .maxThemeExposureRatio(effectiveMaxThemeExposureRatio())
                 .maxCountryExposureRatio(effectiveMaxCountryExposureRatio())
                 .maxOpenPositions(effectiveMaxOpenPositions())
+                .remainingOpenPositionSlots(remainingSlots)
                 .takeProfitPct(effectiveTakeProfitPct())
                 .stopLossPct(effectiveStopLossPct())
                 .positionExposure(exposureByAsset(invested))
@@ -158,31 +177,58 @@ public class RiskPolicyService {
                 .strategyBlockedCount(strategySnapshot.strategyBlockedCount())
                 .blockedReasonDistribution(strategySnapshot.blockedReasonDistribution())
                 .duplicateExposureStats(strategySnapshot.duplicateExposureStats())
+                .topBlockedReasons(topBlockedReasons)
                 .buyLockCount(locks.size())
                 .reanalysisPendingCount((int) locks.stream().filter(this::isReanalysisPending).count())
                 .dataQualityDegradedAssets(degradedAssets)
+                .dataQualityDegradedCount(degradedAssets.size())
                 .positionLimitWarningAssets(positionWarnings)
+                .positionLimitWarningCount(positionWarnings.size())
                 .portfolioDiversificationWarning(!diversificationWarnings.isEmpty())
                 .portfolioDiversificationWarnings(diversificationWarnings)
+                .portfolioHeatScore(portfolioHeatScore)
+                .portfolioRiskLevel(portfolioRiskLevel)
                 .referenceOnly(true)
                 .referenceCapitalBasis(capital)
                 .recommendedEntryRatioPct(recommendedEntryRatioPct)
                 .recommendedEntryAmount(recommendedEntryAmount)
                 .recommendedBuySplitRatios(buySplits)
+                .recommendedBuySplitAmountsCapitalBasis(buySplitAmountsCapital)
+                .recommendedBuySplitAmountsCashBasis(buySplitAmountsCash)
                 .recommendedSellSplitRatios(sellSplits)
+                .recommendedSellSplitAmountsInvestedBasis(sellSplitAmountsInvested)
                 .reanalysisLockMinutes(effectiveReanalysisLockMinutes())
+                .reanalysisPendingAssets(reanalysisPendingAssets)
                 .build();
     }
 
     public List<BuyLockStatusDto> buyLocks() {
         return paperTradePositionRepository.findTop300ByBuyLockTrueOrderByLockUntilAsc().stream()
-                .map(position -> BuyLockStatusDto.builder()
-                        .assetCode(position.getAssetCode())
-                        .assetName(assetUniverseRepository.findById(position.getAssetCode()).map(AssetUniverseEntity::getAssetName).orElse("-"))
-                        .lockReason(position.getLockReason())
-                        .lockUntil(position.getLockUntil())
-                        .lastReanalysisAt(position.getLastReanalysisAt())
-                        .build())
+                .map(position -> {
+                    OffsetDateTime now = OffsetDateTime.now();
+                    OffsetDateTime lockUntil = position.getLockUntil();
+                    long remainingLockMinutes = lockUntil == null
+                            ? 0L
+                            : Math.max(0L, ChronoUnit.MINUTES.between(now, lockUntil));
+                    BuyLockStatusDto dto = BuyLockStatusDto.builder()
+                            .assetCode(position.getAssetCode())
+                            .assetName(assetUniverseRepository.findById(position.getAssetCode()).map(AssetUniverseEntity::getAssetName).orElse("-"))
+                            .lockReason(position.getLockReason())
+                            .lockUntil(lockUntil)
+                            .lastReanalysisAt(position.getLastReanalysisAt())
+                            .remainingLockMinutes(remainingLockMinutes)
+                            .build();
+                    boolean pending = isReanalysisPending(dto);
+                    return BuyLockStatusDto.builder()
+                            .assetCode(dto.getAssetCode())
+                            .assetName(dto.getAssetName())
+                            .lockReason(dto.getLockReason())
+                            .lockUntil(dto.getLockUntil())
+                            .lastReanalysisAt(dto.getLastReanalysisAt())
+                            .reanalysisPending(pending)
+                            .remainingLockMinutes(dto.getRemainingLockMinutes())
+                            .build();
+                })
                 .toList();
     }
 
@@ -348,6 +394,17 @@ public class RiskPolicyService {
         return dto.getLastReanalysisAt().isBefore(dto.getLockUntil().minusMinutes(1));
     }
 
+    private String lockSummaryLine(BuyLockStatusDto dto) {
+        if (dto == null) {
+            return "-";
+        }
+        String asset = dto.getAssetName() == null || dto.getAssetName().isBlank() ? dto.getAssetCode() : dto.getAssetName();
+        String code = dto.getAssetCode() == null ? "" : dto.getAssetCode();
+        String reason = dto.getLockReason() == null ? "-" : dto.getLockReason();
+        long remaining = dto.getRemainingLockMinutes() == null ? 0L : Math.max(0L, dto.getRemainingLockMinutes());
+        return asset + " (" + code + ") " + reason + " / 남은락 " + remaining + "분";
+    }
+
     private List<String> dataQualityDegradedAssets(List<PaperTradePositionEntity> positions) {
         List<String> rows = new ArrayList<>();
         for (PaperTradePositionEntity position : positions) {
@@ -429,6 +486,64 @@ public class RiskPolicyService {
         BigDecimal maxAssetPct = nvl(effectiveMaxPositionRatioPerAsset()).multiply(BigDecimal.valueOf(100));
         BigDecimal splitPct = buySplits.isEmpty() ? BigDecimal.valueOf(20) : BigDecimal.valueOf(Math.max(1, buySplits.get(0)));
         return splitPct.min(maxAssetPct.max(BigDecimal.valueOf(1))).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private List<BigDecimal> splitAmounts(BigDecimal basisAmount, List<Integer> ratios) {
+        BigDecimal basis = nvl(basisAmount).max(BigDecimal.ZERO);
+        if (ratios == null || ratios.isEmpty()) {
+            return List.of();
+        }
+        List<BigDecimal> result = new ArrayList<>();
+        for (Integer ratio : ratios) {
+            int pct = ratio == null ? 0 : Math.max(0, ratio);
+            BigDecimal amount = basis.multiply(BigDecimal.valueOf(pct))
+                    .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
+            result.add(amount);
+        }
+        return result;
+    }
+
+    private List<String> topBlockedReasons(Map<String, Long> blockedReasonDistribution) {
+        if (blockedReasonDistribution == null || blockedReasonDistribution.isEmpty()) {
+            return List.of();
+        }
+        return blockedReasonDistribution.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .limit(5)
+                .map(entry -> entry.getKey() + ":" + entry.getValue())
+                .toList();
+    }
+
+    private BigDecimal portfolioHeatScore(
+            BigDecimal invested,
+            BigDecimal capital,
+            List<String> positionWarnings,
+            List<String> diversificationWarnings) {
+        BigDecimal investedRatio = ratio(invested.max(BigDecimal.ZERO), capital.max(BigDecimal.ZERO));
+        BigDecimal score = investedRatio.multiply(BigDecimal.valueOf(0.45d));
+        if (positionWarnings != null && !positionWarnings.isEmpty()) {
+            score = score.add(BigDecimal.valueOf(Math.min(0.35d, positionWarnings.size() * 0.10d)));
+        }
+        if (diversificationWarnings != null && !diversificationWarnings.isEmpty()) {
+            score = score.add(BigDecimal.valueOf(Math.min(0.25d, diversificationWarnings.size() * 0.08d)));
+        }
+        return score.min(BigDecimal.ONE).setScale(4, RoundingMode.HALF_UP);
+    }
+
+    private String portfolioRiskLevel(
+            BigDecimal heatScore,
+            List<String> degradedAssets,
+            List<BuyLockStatusDto> locks) {
+        BigDecimal score = nvl(heatScore);
+        long pendingLocks = locks == null ? 0L : locks.stream().filter(this::isReanalysisPending).count();
+        if (score.compareTo(BigDecimal.valueOf(0.75d)) >= 0
+                || (degradedAssets != null && degradedAssets.size() >= 3)) {
+            return "HIGH";
+        }
+        if (score.compareTo(BigDecimal.valueOf(0.45d)) >= 0 || pendingLocks > 0) {
+            return "MEDIUM";
+        }
+        return "LOW";
     }
 
     private BigDecimal ratio(BigDecimal amount, BigDecimal total) {
