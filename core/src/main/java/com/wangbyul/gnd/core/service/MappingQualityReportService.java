@@ -138,21 +138,24 @@ public class MappingQualityReportService {
                     "overexpansion_rate", safeDecimal(row.getCountryThemeOverexpansionRate())));
         }
 
-        return Map.of(
-                "latest", Map.ofEntries(
-                        Map.entry("id", latest.getId()),
-                        Map.entry("report_time_utc", latest.getReportTimeUtc()),
-                        Map.entry("country", latest.getCountry()),
-                        Map.entry("theme", latest.getTheme()),
-                        Map.entry("sample_size", latest.getSampleSize()),
-                        Map.entry("direct_match_precision", latest.getDirectMatchPrecision()),
-                        Map.entry("theme_match_false_positive_rate", latest.getThemeMatchFalsePositiveRate()),
-                        Map.entry("country_theme_overexpansion_rate", latest.getCountryThemeOverexpansionRate()),
-                        Map.entry("link_score_avg", latest.getLinkScoreAvg()),
-                        Map.entry("link_score_p50", latest.getLinkScoreP50()),
-                        Map.entry("link_score_p90", latest.getLinkScoreP90()),
-                        Map.entry("summary_json", latest.getSummaryJson())),
-                "trend", trend);
+        Map<String, Object> latestMap = new HashMap<>();
+        latestMap.put("id", latest.getId());
+        latestMap.put("report_time_utc", latest.getReportTimeUtc());
+        latestMap.put("country", latest.getCountry() == null ? "ALL" : latest.getCountry());
+        latestMap.put("theme", latest.getTheme() == null ? "ALL" : latest.getTheme());
+        latestMap.put("sample_size", latest.getSampleSize());
+        latestMap.put("direct_match_precision", latest.getDirectMatchPrecision());
+        latestMap.put("theme_match_false_positive_rate", latest.getThemeMatchFalsePositiveRate());
+        latestMap.put("country_theme_overexpansion_rate", latest.getCountryThemeOverexpansionRate());
+        latestMap.put("link_score_avg", latest.getLinkScoreAvg());
+        latestMap.put("link_score_p50", latest.getLinkScoreP50());
+        latestMap.put("link_score_p90", latest.getLinkScoreP90());
+        latestMap.put("summary_json", latest.getSummaryJson());
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("latest", latestMap);
+        data.put("trend", trend);
+        return data;
     }
 
     private List<NewsAssetLinkEntity> filterByScope(List<NewsAssetLinkEntity> links, String country, String theme) {
