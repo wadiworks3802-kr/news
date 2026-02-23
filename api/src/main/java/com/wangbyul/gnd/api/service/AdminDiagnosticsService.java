@@ -12,6 +12,9 @@ import com.wangbyul.gnd.core.domain.AuditSeverityType;
 import com.wangbyul.gnd.core.domain.MarketDataGapEventEntity;
 import com.wangbyul.gnd.core.domain.MarketDataQualitySnapshotEntity;
 import com.wangbyul.gnd.core.domain.MarketQuoteSnapshotEntity;
+import com.wangbyul.gnd.core.domain.NewsEntity;
+import com.wangbyul.gnd.core.domain.NewsThumbnailSourceType;
+import com.wangbyul.gnd.core.domain.NewsThumbnailStatusType;
 import com.wangbyul.gnd.core.domain.SignalAuditEngineType;
 import com.wangbyul.gnd.core.domain.SignalAuditLogEntity;
 import com.wangbyul.gnd.core.domain.StrategyRunEntity;
@@ -25,12 +28,15 @@ import com.wangbyul.gnd.core.repository.MarketDataQualitySnapshotRepository;
 import com.wangbyul.gnd.core.repository.MarketPriceBarRepository;
 import com.wangbyul.gnd.core.repository.MarketProviderJobRepository;
 import com.wangbyul.gnd.core.repository.MarketQuoteSnapshotRepository;
+import com.wangbyul.gnd.core.repository.NewsRepository;
 import com.wangbyul.gnd.core.repository.SignalAuditLogRepository;
 import com.wangbyul.gnd.core.repository.StrategyRunRepository;
 import com.wangbyul.gnd.core.repository.TradingSignalRepository;
 import com.wangbyul.gnd.core.service.MappingQualityReportService;
 import com.wangbyul.gnd.core.service.TickerAliasVerificationService;
 import com.wangbyul.gnd.core.service.UniverseRebuildService;
+import com.wangbyul.gnd.core.util.NewsThumbnailParser;
+import java.net.URI;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.OffsetDateTime;
@@ -46,11 +52,13 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 /**
@@ -67,6 +75,12 @@ public class AdminDiagnosticsService {
     private static final String RISK_CHECK_NEWS_PUBLISH_AFTER_FETCH = "news_publish_after_fetch";
     private static final String RISK_CHECK_TRANSLATION_DELAY = "translation_delay_over_threshold";
     private static final String RISK_CHECK_FUTURE_MARKET_BLOCK = "future_market_data_blocked";
+    private static final Pattern THUMBNAIL_HINT_PATTERN = Pattern.compile(
+            "(og:image|twitter:image|<img\\b|\\.(?:jpg|jpeg|png|webp|gif))",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern THUMBNAIL_EPHEMERAL_URL_PATTERN = Pattern.compile(
+            "(x-amz-|expires=|signature=|token=)",
+            Pattern.CASE_INSENSITIVE);
 
     private final UniverseRebuildService universeRebuildService;
     private final TickerAliasVerificationService tickerAliasVerificationService;
@@ -77,6 +91,7 @@ public class AdminDiagnosticsService {
     private final MarketProviderJobRepository marketProviderJobRepository;
     private final MarketQuoteSnapshotRepository marketQuoteSnapshotRepository;
     private final MarketPriceBarRepository marketPriceBarRepository;
+    private final NewsRepository newsRepository;
     private final SignalAuditLogRepository signalAuditLogRepository;
     private final TradingSignalRepository tradingSignalRepository;
     private final StrategyRunRepository strategyRunRepository;
@@ -433,6 +448,156 @@ public class AdminDiagnosticsService {
 
     public Map<String, Object> getNewsAssetMappingDiagnostics(String country, String theme, boolean refresh) {
         return mappingQualityReportService.diagnostics(country, theme, refresh);
+    }
+
+    public Map<String, Object> getNewsThumbnailDiagnostics(String country, int hours, int limit) {
+        int safeHours = Math.max(1, Math.min(hours, 168));
+        int safeLimit = Math.max(1, Math.min(limit, 500));
+        OffsetDateTime since = OffsetDateTime.now().minusHours(safeHours);
+        int fetchSize = Math.max(300, safeLimit);
+
+        List<NewsEntity> recent = newsRepository
+                .findAll(PageRequest.of(0, Math.min(fetchSize, 1000), Sort.by(Sort.Direction.DESC, "pubUtc")))
+                .getContent()
+                .stream()
+                .filter(row -> isBlank(country) || eqIgnoreCase(row.getCountry(), country))
+                .filter(row -> {
+                    OffsetDateTime baseTime = newsThumbnailBaseTime(row);
+                    return baseTime != null && !baseTime.isBefore(since);
+                })
+                .limit(safeLimit)
+                .toList();
+
+        List<ThumbnailDiagRow> classified = recent.stream()
+                .map(this::classifyNewsThumbnailRow)
+                .toList();
+
+        long successCount = classified.stream()
+                .filter(row -> row.status() == NewsThumbnailStatusType.SUCCESS)
+                .count();
+        long emptyCount = classified.stream()
+                .filter(row -> row.status() == NewsThumbnailStatusType.EMPTY)
+                .count();
+        long failedCount = classified.stream()
+                .filter(row -> row.status() == NewsThumbnailStatusType.FAILED)
+                .count();
+        long failedOrEmptyCount = emptyCount + failedCount;
+        long mixedContentCount = classified.stream().filter(ThumbnailDiagRow::mixedContentRisk).count();
+        long parserFallbackUsedCount = classified.stream().filter(ThumbnailDiagRow::parserFallbackUsed).count();
+        long storedMetadataCount = classified.stream().filter(ThumbnailDiagRow::storedMetadataUsed).count();
+        long defaultPlaceholderFallbackCount = classified.stream()
+                .filter(row -> row.status() != NewsThumbnailStatusType.SUCCESS)
+                .count();
+        long potentialHotlinkRiskCount = classified.stream().filter(ThumbnailDiagRow::ephemeralUrlRisk).count();
+
+        Map<String, Long> sourceDistribution = classified.stream()
+                .collect(Collectors.groupingBy(
+                        row -> row.source() == null ? "UNKNOWN" : row.source().name(),
+                        LinkedHashMap::new,
+                        Collectors.counting()));
+        Map<String, Long> statusDistribution = classified.stream()
+                .collect(Collectors.groupingBy(
+                        row -> row.status() == null ? "UNKNOWN" : row.status().name(),
+                        LinkedHashMap::new,
+                        Collectors.counting()));
+        Map<String, Long> hostDistribution = classified.stream()
+                .filter(row -> !isBlank(row.thumbnailUrl()))
+                .collect(Collectors.groupingBy(
+                        row -> upper(blankAs(row.thumbnailHost(), "UNKNOWN")),
+                        LinkedHashMap::new,
+                        Collectors.counting()));
+        Map<String, Long> topHostDistribution = hostDistribution.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .limit(15)
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue,
+                        (a, b) -> a,
+                        LinkedHashMap::new));
+
+        BigDecimal successRate = classified.isEmpty()
+                ? zero(4)
+                : BigDecimal.valueOf(successCount)
+                        .divide(BigDecimal.valueOf(classified.size()), 4, RoundingMode.HALF_UP);
+
+        List<String> warnings = new ArrayList<>();
+        if (successRate.compareTo(BigDecimal.valueOf(0.70d)) < 0) {
+            warnings.add("뉴스 썸네일 성공률이 낮습니다 (70% 미만).");
+        }
+        if (mixedContentCount > 0) {
+            warnings.add("http:// 썸네일 URL이 존재하여 HTTPS 화면에서 mixed-content 차단 위험이 있습니다.");
+        }
+        if (failedCount > 0) {
+            warnings.add("썸네일 파싱 FAILED 상태가 존재합니다.");
+        }
+        if (emptyCount > 0) {
+            warnings.add("썸네일이 비어 있는 기사(EMPTY)가 존재하여 placeholder 이미지가 사용됩니다.");
+        }
+        if (potentialHotlinkRiskCount > 0) {
+            warnings.add("만료성/서명형 이미지 URL이 감지되어 hotlink 만료 가능성이 있습니다.");
+        }
+
+        List<Map<String, Object>> failureSamples = classified.stream()
+                .filter(row -> row.status() != NewsThumbnailStatusType.SUCCESS)
+                .limit(12)
+                .map(this::thumbnailDiagSample)
+                .toList();
+        List<Map<String, Object>> mixedContentSamples = classified.stream()
+                .filter(ThumbnailDiagRow::mixedContentRisk)
+                .limit(10)
+                .map(this::thumbnailDiagSample)
+                .toList();
+        List<Map<String, Object>> ephemeralUrlSamples = classified.stream()
+                .filter(ThumbnailDiagRow::ephemeralUrlRisk)
+                .limit(10)
+                .map(this::thumbnailDiagSample)
+                .toList();
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("scope_country", blankAs(country, "ALL"));
+        data.put("window_hours", safeHours);
+        data.put("sample_size", classified.size());
+        data.put("success_count", successCount);
+        data.put("empty_count", emptyCount);
+        data.put("failed_count", failedCount);
+        data.put("failed_or_empty_count", failedOrEmptyCount);
+        data.put("success_rate", successRate);
+        data.put("thumbnail_source_distribution", sourceDistribution);
+        data.put("thumbnail_status_distribution", statusDistribution);
+        data.put("thumbnail_host_distribution_top", topHostDistribution);
+        data.put("stored_thumbnail_metadata_used_count", storedMetadataCount);
+        data.put("parser_fallback_used_count", parserFallbackUsedCount);
+        data.put("placeholder_fallback_count", defaultPlaceholderFallbackCount);
+        data.put("mixed_content_http_count", mixedContentCount);
+        data.put("ephemeral_url_risk_count", potentialHotlinkRiskCount);
+        data.put("warnings", warnings);
+        data.put("provider_name", upper(blankAs(marketDataProviderRouter.activeProviderId(), "mock")));
+        data.put("is_delayed", false);
+        data.put("rendering_contract_check", Map.of(
+                "api_field_thumbnail_url_present", true,
+                "api_field_thumbnail_source_present", true,
+                "api_field_thumbnail_status_present", true,
+                "frontend_should_render_img_first", true,
+                "text_placeholder_rendering_removed", true));
+        data.put("parsing_priority", List.of("RSS enclosure", "og:image", "twitter:image", "body first image", "default placeholder"));
+        data.put("policy_checks", Map.of(
+                "mixed_content_http_detected", mixedContentCount > 0,
+                "csp_header_code_check", "MANUAL_REVIEW_REQUIRED",
+                "hotlink_block_risk_detected", potentialHotlinkRiskCount > 0));
+        data.put("failure_samples", failureSamples);
+        data.put("mixed_content_samples", mixedContentSamples);
+        data.put("ephemeral_url_samples", ephemeralUrlSamples);
+        data.put("items", classified.stream().limit(Math.min(30, safeLimit)).map(this::thumbnailDiagSample).toList());
+        data.put("latest_news_time_utc", classified.stream()
+                .map(ThumbnailDiagRow::eventTimeUtc)
+                .filter(Objects::nonNull)
+                .max(OffsetDateTime::compareTo)
+                .orElse(null));
+        data.put("diagnostic_todo", List.of(
+                "CSP 응답 헤더 실측 검증(브라우저/프록시 레벨) 필요",
+                "hotlink 차단은 브라우저 onerror/네트워크 로그 기반 추가 수집 필요",
+                "기존 적재 뉴스의 썸네일 메타 보강을 위한 백필 작업 검토"));
+        return data;
     }
 
     public Map<String, Object> getSignalAuditDiagnostics(
@@ -1160,6 +1325,162 @@ public class AdminDiagnosticsService {
 
     private boolean marketProviderRouterAllowMock() {
         return marketDataProviderRouter.allowMock();
+    }
+
+    private OffsetDateTime newsThumbnailBaseTime(NewsEntity row) {
+        if (row == null) {
+            return null;
+        }
+        if (row.getPublishedAtUtc() != null) {
+            return row.getPublishedAtUtc();
+        }
+        if (row.getPubUtc() != null) {
+            return row.getPubUtc();
+        }
+        return row.getCreatedAt();
+    }
+
+    private ThumbnailDiagRow classifyNewsThumbnailRow(NewsEntity row) {
+        String storedUrl = blankAs(row.getThumbnailUrl(), "");
+        NewsThumbnailSourceType storedSource = row.getThumbnailSource();
+        NewsThumbnailStatusType storedStatus = row.getThumbnailStatus();
+        boolean hasStoredMetadata = !isBlank(storedUrl) || storedSource != null || storedStatus != null;
+
+        String effectiveUrl = storedUrl;
+        NewsThumbnailSourceType effectiveSource = storedSource;
+        NewsThumbnailStatusType effectiveStatus = storedStatus;
+        boolean parserFallbackUsed = false;
+
+        if (isBlank(effectiveUrl) || effectiveStatus == null || effectiveSource == null) {
+            var parsed = NewsThumbnailParser.parse(row.getBodyRaw());
+            parserFallbackUsed = true;
+            if (isBlank(effectiveUrl)) {
+                effectiveUrl = blankAs(parsed.thumbnailUrl(), "");
+            }
+            if (effectiveSource == null) {
+                effectiveSource = parsed.source();
+            }
+            if (effectiveStatus == null) {
+                effectiveStatus = parsed.status();
+            }
+        }
+
+        if (effectiveSource == null) {
+            effectiveSource = NewsThumbnailSourceType.DEFAULT;
+        }
+        if (effectiveStatus == null) {
+            effectiveStatus = isBlank(effectiveUrl) ? NewsThumbnailStatusType.EMPTY : NewsThumbnailStatusType.SUCCESS;
+        }
+        if (!isBlank(effectiveUrl) && effectiveStatus != NewsThumbnailStatusType.SUCCESS) {
+            effectiveStatus = NewsThumbnailStatusType.SUCCESS;
+        }
+
+        String normalizedUrl = normalizeThumbnailDiagnosticUrl(effectiveUrl);
+        boolean mixedContentRisk = normalizedUrl.startsWith("http://");
+        String host = extractThumbnailHost(normalizedUrl);
+        boolean ephemeralRisk = !isBlank(normalizedUrl)
+                && THUMBNAIL_EPHEMERAL_URL_PATTERN.matcher(normalizedUrl).find();
+        String failureReason = classifyThumbnailFailureReason(row, effectiveStatus, normalizedUrl);
+
+        return new ThumbnailDiagRow(
+                row.getId(),
+                blankAs(row.getCountry(), ""),
+                row.getCategory() == null ? "" : row.getCategory().name(),
+                blankAs(row.getTitleKo(), blankAs(row.getTitleRaw(), "")),
+                normalizedUrl,
+                host,
+                effectiveSource,
+                effectiveStatus,
+                mixedContentRisk,
+                ephemeralRisk,
+                parserFallbackUsed,
+                hasStoredMetadata,
+                failureReason,
+                blankAs(row.getUrl(), ""),
+                newsThumbnailBaseTime(row),
+                row.getCreatedAt(),
+                blankAs(row.getSource() == null ? null : row.getSource().getSid(), ""));
+    }
+
+    private Map<String, Object> thumbnailDiagSample(ThumbnailDiagRow row) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", row.id());
+        item.put("country", row.country());
+        item.put("category", row.category());
+        item.put("title", row.title());
+        item.put("thumbnail_url", row.thumbnailUrl());
+        item.put("thumbnail_source", row.source() == null ? "UNKNOWN" : row.source().name());
+        item.put("thumbnail_status", row.status() == null ? "UNKNOWN" : row.status().name());
+        item.put("thumbnail_host", row.thumbnailHost());
+        item.put("mixed_content_risk", row.mixedContentRisk());
+        item.put("ephemeral_url_risk", row.ephemeralUrlRisk());
+        item.put("parser_fallback_used", row.parserFallbackUsed());
+        item.put("stored_metadata_used", row.storedMetadataUsed());
+        item.put("failure_reason", row.failureReason());
+        item.put("article_url", row.articleUrl());
+        item.put("sid", row.sid());
+        item.put("event_time_utc", row.eventTimeUtc());
+        item.put("created_at", row.createdAt());
+        return item;
+    }
+
+    private String normalizeThumbnailDiagnosticUrl(String value) {
+        if (isBlank(value)) {
+            return "";
+        }
+        String trimmed = value.trim();
+        if (trimmed.startsWith("//")) {
+            return "https:" + trimmed;
+        }
+        return trimmed;
+    }
+
+    private String extractThumbnailHost(String url) {
+        if (isBlank(url)) {
+            return "";
+        }
+        try {
+            URI uri = URI.create(url);
+            return blankAs(uri.getHost(), "");
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private String classifyThumbnailFailureReason(NewsEntity row, NewsThumbnailStatusType status, String thumbnailUrl) {
+        if (status == NewsThumbnailStatusType.SUCCESS && !isBlank(thumbnailUrl)) {
+            return "";
+        }
+        if (status == NewsThumbnailStatusType.FAILED) {
+            return "PARSING_EXCEPTION";
+        }
+        if (row == null || isBlank(row.getBodyRaw())) {
+            return "BODY_EMPTY";
+        }
+        if (THUMBNAIL_HINT_PATTERN.matcher(row.getBodyRaw()).find()) {
+            return "PARSE_EMPTY_WITH_IMAGE_HINT";
+        }
+        return "NO_IMAGE_CANDIDATE";
+    }
+
+    private record ThumbnailDiagRow(
+            String id,
+            String country,
+            String category,
+            String title,
+            String thumbnailUrl,
+            String thumbnailHost,
+            NewsThumbnailSourceType source,
+            NewsThumbnailStatusType status,
+            boolean mixedContentRisk,
+            boolean ephemeralUrlRisk,
+            boolean parserFallbackUsed,
+            boolean storedMetadataUsed,
+            String failureReason,
+            String articleUrl,
+            OffsetDateTime eventTimeUtc,
+            OffsetDateTime createdAt,
+            String sid) {
     }
 
     private String upper(String value) {

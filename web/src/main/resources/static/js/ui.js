@@ -324,7 +324,7 @@ window.ui = {
   },
 
   bindThumbFallback() {
-    // 원본 이미지 로드 실패 시 텍스트 기반 썸네일로 즉시 대체
+    // 원본 이미지 로드 실패 시 기본 placeholder 이미지로 대체
     $(".news-thumb").on("error", function () {
       const fallback = $(this).attr("data-fallback");
       if (fallback && $(this).attr("src") !== fallback) {
@@ -356,7 +356,7 @@ window.ui = {
     const sourceIconUrl = this.isHttpUrl(item.source_icon_url)
       ? item.source_icon_url
       : this.buildFaviconUrl(item.url);
-    const fallbackUrl = this.buildTextThumbnail(item, categoryCode);
+    const fallbackUrl = this.buildDefaultThumbnailUrl();
     if (this.isHttpUrl(item.thumbnail_url)) {
       return {
         primaryUrl: item.thumbnail_url,
@@ -369,6 +369,10 @@ window.ui = {
       fallbackUrl,
       sourceIconUrl
     };
+  },
+
+  buildDefaultThumbnailUrl() {
+    return "/img/news-placeholder.svg";
   },
 
   buildFaviconUrl(articleUrl) {

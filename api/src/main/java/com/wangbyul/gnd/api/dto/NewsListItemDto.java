@@ -44,6 +44,12 @@ public class NewsListItemDto {
     @JsonProperty("thumbnail_url")
     private String thumbnailUrl;
 
+    @JsonProperty("thumbnail_source")
+    private String thumbnailSource;
+
+    @JsonProperty("thumbnail_status")
+    private String thumbnailStatus;
+
     @JsonProperty("source_icon_url")
     private String sourceIconUrl;
 

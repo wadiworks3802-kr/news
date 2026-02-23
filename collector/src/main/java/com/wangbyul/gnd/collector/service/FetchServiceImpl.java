@@ -5,6 +5,8 @@ import com.wangbyul.gnd.collector.client.FetchResult;
 import com.wangbyul.gnd.core.domain.CategoryType;
 import com.wangbyul.gnd.core.domain.EventTimeSourceType;
 import com.wangbyul.gnd.core.domain.NewsEntity;
+import com.wangbyul.gnd.core.domain.NewsThumbnailSourceType;
+import com.wangbyul.gnd.core.domain.NewsThumbnailStatusType;
 import com.wangbyul.gnd.core.domain.SourceEntity;
 import com.wangbyul.gnd.core.exception.HumanReviewReason;
 import com.wangbyul.gnd.core.exception.HumanReviewRequiredException;
@@ -15,6 +17,7 @@ import com.wangbyul.gnd.core.service.DedupService;
 import com.wangbyul.gnd.core.service.DlqPublisher;
 import com.wangbyul.gnd.core.service.FetchService;
 import com.wangbyul.gnd.core.service.NormalizeService;
+import com.wangbyul.gnd.core.util.NewsThumbnailParser;
 import java.io.StringReader;
 import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
@@ -149,7 +152,8 @@ public class FetchServiceImpl implements FetchService {
                     "Fetched headline",
                     result.body(),
                     fetchedAt,
-                    fetchedAt));
+                    fetchedAt,
+                    ""));
         }
 
         List<NewsEntity> entities = new ArrayList<>();
@@ -160,7 +164,8 @@ public class FetchServiceImpl implements FetchService {
                     defaultIfBlank(feedItem.title(), "Fetched headline"),
                     defaultIfBlank(feedItem.body(), result.body()),
                     feedItem.pubUtc(),
-                    fetchedAt));
+                    fetchedAt,
+                    feedItem.thumbnailUrl()));
             if (entities.size() >= MAX_ITEMS_PER_SOURCE) {
                 break;
             }
@@ -178,7 +183,8 @@ public class FetchServiceImpl implements FetchService {
             String title,
             String bodyRaw,
             OffsetDateTime pubUtc,
-            OffsetDateTime fetchedAt) {
+            OffsetDateTime fetchedAt,
+            String rssThumbnailUrl) {
         NewsEntity entity = new NewsEntity();
         entity.setId(UUID.randomUUID().toString().replace("-", ""));
         entity.setSource(source);
@@ -199,7 +205,27 @@ public class FetchServiceImpl implements FetchService {
         entity.setTitleKo(title);
         entity.setSummaryKo(summarize(bodyRaw));
         entity.setEvidenceSpans("[\"source:" + source.getSid() + "\",\"mode:live-fetch\"]");
+        applyThumbnailMetadata(entity, bodyRaw, rssThumbnailUrl);
         return entity;
+    }
+
+    /**
+     * 썸네일 메타데이터를 구조화 저장한다.
+     * 우선순위: RSS enclosure/media:* > OG/TWITTER/BODY 파서 > EMPTY/FAILED
+     */
+    private void applyThumbnailMetadata(NewsEntity entity, String bodyRaw, String rssThumbnailUrl) {
+        String rssImage = safeUrl(defaultIfBlank(rssThumbnailUrl, ""), "");
+        if (!rssImage.isBlank()) {
+            entity.setThumbnailUrl(rssImage);
+            entity.setThumbnailSource(NewsThumbnailSourceType.RSS);
+            entity.setThumbnailStatus(NewsThumbnailStatusType.SUCCESS);
+            return;
+        }
+
+        var parsed = NewsThumbnailParser.parse(bodyRaw);
+        entity.setThumbnailUrl(parsed.thumbnailUrl());
+        entity.setThumbnailSource(parsed.source());
+        entity.setThumbnailStatus(parsed.status());
     }
 
     /**
@@ -233,13 +259,14 @@ public class FetchServiceImpl implements FetchService {
                 String description = firstNonBlank(
                         childText(element, "description"),
                         childText(element, "content:encoded"));
-                description = enrichDescriptionWithFeedImage(description, extractFeedImageUrl(element));
+                String feedImageUrl = extractFeedImageUrl(element);
+                description = enrichDescriptionWithFeedImage(description, feedImageUrl);
                 OffsetDateTime pubUtc = parseDate(firstNonBlank(
                         childText(element, "pubDate"),
                         childText(element, "dc:date"),
                         childText(element, "published"),
                         childText(element, "updated")));
-                items.add(new FeedItem(title, link, description, pubUtc));
+                items.add(new FeedItem(title, link, description, pubUtc, feedImageUrl));
             }
 
             NodeList atomEntries = doc.getElementsByTagName("entry");
@@ -253,11 +280,12 @@ public class FetchServiceImpl implements FetchService {
                         childText(element, "summary"),
                         childText(element, "content"));
                 String link = resolveAtomLink(element);
-                description = enrichDescriptionWithFeedImage(description, extractFeedImageUrl(element));
+                String feedImageUrl = extractFeedImageUrl(element);
+                description = enrichDescriptionWithFeedImage(description, feedImageUrl);
                 OffsetDateTime pubUtc = parseDate(firstNonBlank(
                         childText(element, "published"),
                         childText(element, "updated")));
-                items.add(new FeedItem(title, link, description, pubUtc));
+                items.add(new FeedItem(title, link, description, pubUtc, feedImageUrl));
             }
 
             return items.stream()
@@ -513,11 +541,12 @@ public class FetchServiceImpl implements FetchService {
         return value.trim();
     }
 
-    private record FeedItem(String title, String link, String body, OffsetDateTime pubUtc) {
+    private record FeedItem(String title, String link, String body, OffsetDateTime pubUtc, String thumbnailUrl) {
         private FeedItem {
             title = title == null ? "" : title.trim();
             link = link == null ? "" : link.trim();
             body = body == null ? "" : body.trim();
+            thumbnailUrl = thumbnailUrl == null ? "" : thumbnailUrl.trim();
         }
     }
 

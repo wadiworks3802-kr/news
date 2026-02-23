@@ -162,6 +162,19 @@ public class AdminDiagnosticsController {
         return envelope(data, adminDiagnosticsService.diagnosticMeta("news-asset-mapping:7d", warningCount));
     }
 
+    @GetMapping("/news/thumbnails")
+    public ApiEnvelope<Map<String, Object>> newsThumbnailDiagnostics(
+            @RequestParam(required = false) String country,
+            @RequestParam(defaultValue = "72") int hours,
+            @RequestParam(defaultValue = "300") int limit) {
+        Map<String, Object> data = adminDiagnosticsService.getNewsThumbnailDiagnostics(
+                country,
+                Math.max(1, Math.min(hours, 168)),
+                Math.max(1, Math.min(limit, 500)));
+        int warningCount = intValue(data.get("failed_or_empty_count"));
+        return envelope(data, adminDiagnosticsService.diagnosticMeta("news:thumbnails", warningCount));
+    }
+
     @GetMapping("/signals/audit")
     public ApiEnvelope<Map<String, Object>> signalAuditDiagnostics(
             @RequestParam(required = false) String country,

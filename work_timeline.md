@@ -234,3 +234,13 @@
 - [T227] 수동 수집 테스트 엔드포인트 추가(2차): `AdminMarketDataController`에 `POST /api/admin/market-data/collect`를 추가해 `QUOTE/BAR/HEALTH_CHECK` 수동 실행, provider override, `meta(provider_name/is_delayed/degraded/warnings/mock_provider_warning/trace_id)` 반환이 가능하도록 연결.
 - [T228] 운영 Mock 금지 모드 검증(2차): 로컬 API를 `app.market.provider.active=toss`, `app.market.provider.allow-mock=false`로 기동해 실 provider 실패 시 mock 혼합 없이 `FAILED`/`fallback_blocked=true`/`provider_error_code=PROVIDER_STUB_NOT_IMPLEMENTED` 응답을 확인.
 - [T229] DB 적재 증거 확인(2차): H2 Shell로 `market_quote_snapshot` provider 분포 및 최신 행 `provider_name`, `quote_time_utc`, `ingested_at`, `trace_id` 저장 여부와 `market_provider_job`의 `provider_error_code/provider_error_message/trace_id` 감사 행을 조회해 증거를 수집.
+
+## 2026-02-23
+- [T230] 뉴스 썸네일 정상화 3차 착수: "텍스트 썸네일처럼 보이는 문제"를 파싱/저장/렌더링/정책(CSP·mixed-content·hotlink) 축으로 분리 진단하기 위한 범위 확정 및 기존 뉴스 카드 렌더 경로 점검.
+- [T231] 뉴스 스키마/도메인 확장(3차): `V14__news_thumbnail_metadata.sql` 추가로 `news.thumbnail_url`, `news.thumbnail_source`, `news.thumbnail_status` 컬럼과 `COMMENT ON COLUMN`을 적용하고 `NewsEntity`에 한글 `@Comment` 필드를 반영.
+- [T232] 썸네일 파서 유틸 추가(3차): `NewsThumbnailParser` 및 enum(`NewsThumbnailSourceType`, `NewsThumbnailStatusType`)을 추가해 `og:image`, `twitter:image`, 본문 이미지/lazy 속성(`data-src`류), `srcset`, 일반 이미지 URL 후보 추출 로직을 공통화.
+- [T233] 수집단 썸네일 추출 보강(3차): `FetchServiceImpl`에서 RSS/Atom `media:thumbnail`, `media:content`, `enclosure(image/*)`를 우선 수집하고 feed 썸네일 + 본문 파서 결과를 조합해 `thumbnail_url/source/status`를 저장하도록 개선.
+- [T234] API 응답 썸네일 필드 표준화(3차): `NewsListItemDto`와 `NewsController` 목록 응답에 `thumbnail_url`, `thumbnail_source`, `thumbnail_status`를 포함하고, 과거 데이터는 응답 시 파서 fallback으로 보완하도록 확장.
+- [T235] 뉴스 카드 렌더링 수정(3차): `web/ui.js` 카드 렌더를 `img` 우선(`thumbnail_url`)로 변경하고 `onerror` fallback(`/img/news-placeholder.svg`)을 바인딩했으며, 기존 텍스트 placeholder 렌더 경로는 비활성화(미사용) 상태로 정리.
+- [T236] 관리자 썸네일 진단 API 추가(3차): `GET /api/admin/diagnostics/news/thumbnails` 구현으로 성공/실패/EMPTY 비율, source/status 분포, mixed-content(`http://`) 카운트, parser fallback 사용 여부, 실패 샘플 분류(`NO_IMAGE_CANDIDATE` 등), 렌더링 계약 점검 결과를 노출.
+- [T237] 로컬 증거 수집/분석(3차): `ingest/run` 후 `GET /api/news`와 썸네일 진단 API로 `thumbnail_*` 필드/trace_id 노출을 확인하고, KR 샘플(google rss) 다수가 이미지 후보 부재로 `EMPTY/DEFAULT`인 점을 파싱 실패가 아닌 소스 데이터 한계로 분류(프론트 img-first 렌더와 fallback 동작은 코드/응답 기준 확인).

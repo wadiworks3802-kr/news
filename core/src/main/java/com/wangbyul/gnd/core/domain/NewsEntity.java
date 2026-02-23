@@ -105,6 +105,20 @@ public class NewsEntity {
     @Column(name = "summary_ko", columnDefinition = "text")
     private String summaryKo;
 
+    @Column(name = "thumbnail_url", columnDefinition = "text")
+    @Comment("뉴스 카드 대표 썸네일 URL")
+    private String thumbnailUrl;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "thumbnail_source", length = 16)
+    @Comment("썸네일 URL 추출 출처 (RSS/OG/TWITTER/BODY/DEFAULT)")
+    private NewsThumbnailSourceType thumbnailSource;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "thumbnail_status", length = 16)
+    @Comment("썸네일 추출 상태 (SUCCESS/EMPTY/FAILED)")
+    private NewsThumbnailStatusType thumbnailStatus;
+
     @Column(name = "evidence_spans", nullable = false, columnDefinition = "jsonb")
     private String evidenceSpans = "[]";
 

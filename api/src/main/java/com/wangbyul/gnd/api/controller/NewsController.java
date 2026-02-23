@@ -9,8 +9,11 @@ import com.wangbyul.gnd.api.service.NewsLocalizationService;
 import com.wangbyul.gnd.api.service.NewsCacheKeyFactory;
 import com.wangbyul.gnd.core.domain.CategoryType;
 import com.wangbyul.gnd.core.domain.NewsEntity;
+import com.wangbyul.gnd.core.domain.NewsThumbnailSourceType;
+import com.wangbyul.gnd.core.domain.NewsThumbnailStatusType;
 import com.wangbyul.gnd.core.dto.ApiEnvelope;
 import com.wangbyul.gnd.core.repository.NewsRepository;
+import com.wangbyul.gnd.core.util.NewsThumbnailParser;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -292,6 +295,7 @@ public class NewsController {
         String articleUrl = entity.getUrl();
         String sourceIconUrl = buildFaviconUrl(articleUrl);
         NewsLocalizationService.LocalizedContent localized = newsLocalizationService.localizeForView(entity, viewLang);
+        ThumbnailDtoFields thumbnail = resolveThumbnailDtoFields(entity);
         return NewsListItemDto.builder()
                 .id(entity.getId())
                 .country(entity.getCountry())
@@ -304,10 +308,44 @@ public class NewsController {
                 .pubUtc(entity.getPubUtc())
                 .trustScore(entity.getTrustScore())
                 .evidenceSpans(parseEvidenceSpans(entity.getEvidenceSpans()))
-                .thumbnailUrl(extractFirstImageUrl(entity.getBodyRaw()))
+                .thumbnailUrl(thumbnail.thumbnailUrl())
+                .thumbnailSource(thumbnail.thumbnailSource())
+                .thumbnailStatus(thumbnail.thumbnailStatus())
                 .sourceIconUrl(sourceIconUrl)
                 .translationPending(localized.translationPending())
                 .build();
+    }
+
+    /**
+     * 뉴스 DB 컬럼이 비어 있는 과거 데이터도 대응하기 위해
+     * 저장값 우선 + 본문 재파싱 fallback 형태로 DTO 썸네일 필드를 채운다.
+     */
+    private ThumbnailDtoFields resolveThumbnailDtoFields(NewsEntity entity) {
+        String storedUrl = normalizeImageUrlCandidate(defaultIfBlank(entity.getThumbnailUrl(), ""));
+        NewsThumbnailSourceType storedSource = entity.getThumbnailSource();
+        NewsThumbnailStatusType storedStatus = entity.getThumbnailStatus();
+
+        if (!storedUrl.isBlank() && storedStatus == NewsThumbnailStatusType.SUCCESS) {
+            return new ThumbnailDtoFields(storedUrl, enumName(storedSource, NewsThumbnailSourceType.BODY), storedStatus.name());
+        }
+
+        if (!storedUrl.isBlank() && (storedStatus == null || storedSource == null)) {
+            return new ThumbnailDtoFields(
+                    storedUrl,
+                    enumName(storedSource, NewsThumbnailSourceType.BODY),
+                    enumName(storedStatus, NewsThumbnailStatusType.SUCCESS));
+        }
+
+        var parsed = NewsThumbnailParser.parse(entity.getBodyRaw());
+        String parsedUrl = normalizeImageUrlCandidate(parsed.thumbnailUrl());
+        if (!parsedUrl.isBlank()) {
+            return new ThumbnailDtoFields(parsedUrl, parsed.source().name(), parsed.status().name());
+        }
+
+        return new ThumbnailDtoFields(
+                "",
+                enumName(storedSource, NewsThumbnailSourceType.DEFAULT),
+                enumName(storedStatus, parsed.status()));
     }
 
     private NewsDetailDto toDetailDto(NewsEntity entity, String viewLang) {
@@ -545,5 +583,12 @@ public class NewsController {
      * total을 같이 보관해 홈 화면의 더보기(+N) 계산 정확도를 보장한다.
      */
     private record CachedNewsList(List<NewsListItemDto> data, long total) {
+    }
+
+    private String enumName(Enum<?> value, Enum<?> fallback) {
+        return value == null ? fallback.name() : value.name();
+    }
+
+    private record ThumbnailDtoFields(String thumbnailUrl, String thumbnailSource, String thumbnailStatus) {
     }
 }

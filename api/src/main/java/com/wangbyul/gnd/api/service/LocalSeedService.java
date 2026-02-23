@@ -9,6 +9,8 @@ import com.wangbyul.gnd.core.domain.CategoryType;
 import com.wangbyul.gnd.core.domain.MarketPriceBarEntity;
 import com.wangbyul.gnd.core.domain.MarketQuoteSnapshotEntity;
 import com.wangbyul.gnd.core.domain.NewsEntity;
+import com.wangbyul.gnd.core.domain.NewsThumbnailSourceType;
+import com.wangbyul.gnd.core.domain.NewsThumbnailStatusType;
 import com.wangbyul.gnd.core.domain.SourceEntity;
 import com.wangbyul.gnd.core.domain.SourceGrade;
 import com.wangbyul.gnd.core.repository.AssetUniverseRepository;
@@ -352,6 +354,9 @@ public class LocalSeedService {
         news.setTtl(172800);
         news.setTitleKo(titleKo);
         news.setSummaryKo(summaryKo);
+        news.setThumbnailUrl("");
+        news.setThumbnailSource(NewsThumbnailSourceType.DEFAULT);
+        news.setThumbnailStatus(NewsThumbnailStatusType.EMPTY);
         news.setEvidenceSpans("[\"when:2026-02-20\",\"who:seed-bot\",\"what:sample\",\"impact:ui-check\"]");
         news.setContentHash(HashUtils.sha256(hashInput));
         news.setSimhash64(HashUtils.simHash64(titleKo + " " + bodyRaw + " " + sequence));
