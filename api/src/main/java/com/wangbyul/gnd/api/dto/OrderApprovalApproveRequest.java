@@ -1,6 +1,7 @@
 package com.wangbyul.gnd.api.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import lombok.Getter;
 import lombok.Setter;
@@ -20,6 +21,7 @@ public class OrderApprovalApproveRequest {
     private String approvedBy = "admin-ui";
 
     @JsonProperty("approval_reason")
+    @NotBlank
     private String approvalReason;
 
     @JsonProperty("auto_request_paper_order")

@@ -181,13 +181,16 @@ public class OrderApprovalPipelineService {
         OrderApprovalWorkflowEntity workflow = workflowRepository.findById(workflowId)
                 .orElseThrow(() -> new IllegalArgumentException("workflow not found: " + workflowId));
         ensureApprovable(workflow);
+        if (safe(request.getApprovalReason()).isBlank()) {
+            throw new IllegalArgumentException("approval_reason is required");
+        }
 
         OrderApprovalWorkflowStageType fromStage = workflow.getCurrentStage();
         workflow.setApprovedBy(actorOrDefault(request.getApprovedBy()));
         workflow.setApprovedAt(OffsetDateTime.now());
         workflow.setApprovalReason(safe(request.getApprovalReason()));
         workflow.setCurrentStage(OrderApprovalWorkflowStageType.APPROVE);
-        workflow.setTraceId(traceId());
+        workflow.setTraceId(pipelineTraceId(workflow));
         workflow = workflowRepository.save(workflow);
 
         logEvent(workflow, OrderApprovalEventType.APPROVED, fromStage, OrderApprovalWorkflowStageType.APPROVE,
@@ -217,6 +220,9 @@ public class OrderApprovalPipelineService {
     public Map<String, Object> rejectRecommendation(Long workflowId, OrderApprovalRejectRequest request) {
         OrderApprovalWorkflowEntity workflow = workflowRepository.findById(workflowId)
                 .orElseThrow(() -> new IllegalArgumentException("workflow not found: " + workflowId));
+        if (safe(request.getRejectReason()).isBlank()) {
+            throw new IllegalArgumentException("reject_reason is required");
+        }
         if (workflow.getCurrentStage() == OrderApprovalWorkflowStageType.ORDER_EXECUTED) {
             throw new IllegalArgumentException("executed workflow cannot be rejected");
         }
@@ -229,7 +235,7 @@ public class OrderApprovalPipelineService {
         workflow.setRejectedAt(OffsetDateTime.now());
         workflow.setRejectReason(safe(request.getRejectReason()));
         workflow.setCurrentStage(OrderApprovalWorkflowStageType.REJECTED);
-        workflow.setTraceId(traceId());
+        workflow.setTraceId(pipelineTraceId(workflow));
         workflow = workflowRepository.save(workflow);
 
         logEvent(workflow, OrderApprovalEventType.REJECTED, fromStage, OrderApprovalWorkflowStageType.REJECTED,
@@ -286,15 +292,16 @@ public class OrderApprovalPipelineService {
         workflow.setOrderRequestedAt(OffsetDateTime.now());
         workflow.setOrderRequestReason(reason);
         workflow.setCurrentStage(OrderApprovalWorkflowStageType.ORDER_REQUESTED);
-        workflow.setTraceId(traceId());
+        workflow.setTraceId(pipelineTraceId(workflow));
 
         boolean liveTradeToggle = systemFeatureToggleService.isFeatureEnabled(
                 "LIVE_TRADE", workflow.getCountry(), workflow.getTheme(), workflow.getAssetCode());
-        boolean liveTradeEffective = liveTradeEnabledProperty && liveTradeToggle;
-        workflow.setLiveTradeRequested(liveTradeEffective);
+        boolean liveTradeConfigured = liveTradeEnabledProperty && liveTradeToggle;
+        boolean liveTradeRequested = !forcePaper && liveTradeConfigured;
+        workflow.setLiveTradeRequested(false);
         workflow.setOrderExecutionMode("PAPER_ONLY");
-        workflow.setLiveTradeBlockedReason(liveTradeEffective
-                ? "LIVE_TRADE_NOT_IMPLEMENTED_PREPARATION_STAGE"
+        workflow.setLiveTradeBlockedReason(liveTradeRequested
+                ? "LIVE_TRADE_FORCED_OFF_PREPARATION_STAGE"
                 : "LIVE_TRADE_DISABLED_DEFAULT_OFF");
         workflow = workflowRepository.save(workflow);
 
@@ -304,23 +311,13 @@ public class OrderApprovalPipelineService {
                 Map.of(
                         "force_paper", forcePaper,
                         "live_trade_enabled_property", liveTradeEnabledProperty,
-                        "live_trade_toggle", liveTradeToggle),
-                Map.of("execution_mode", workflow.getOrderExecutionMode()));
-
-        if (!forcePaper && liveTradeEffective) {
-            workflow.setCurrentStage(OrderApprovalWorkflowStageType.ORDER_FAILED);
-            workflow.setOrderErrorCode("LIVE_ORDER_NOT_IMPLEMENTED");
-            workflow.setOrderErrorMessage("실주문 실행 경로는 준비 단계에서 비활성입니다.");
-            workflowRepository.save(workflow);
-            logEvent(workflow, OrderApprovalEventType.ORDER_FAILED,
-                    OrderApprovalWorkflowStageType.ORDER_REQUESTED,
-                    OrderApprovalWorkflowStageType.ORDER_FAILED,
-                    actor, manualRequest ? "ADMIN" : "SYSTEM", reason,
-                    false, "LIVE_ORDER_NOT_IMPLEMENTED",
-                    Map.of("workflow_id", workflow.getId()),
-                    Map.of("message", "live order path is not implemented"));
-            return;
-        }
+                        "live_trade_toggle", liveTradeToggle,
+                        "live_trade_configured", liveTradeConfigured,
+                        "requested_live_trade", liveTradeRequested,
+                        "api_request_trace_id", currentRequestTraceId()),
+                Map.of(
+                        "execution_mode", workflow.getOrderExecutionMode(),
+                        "live_trade_blocked_reason", workflow.getLiveTradeBlockedReason()));
 
         try {
             PaperTradeOrderRequestDto orderRequest = new PaperTradeOrderRequestDto();
@@ -328,6 +325,7 @@ public class OrderApprovalPipelineService {
             orderRequest.setSignalId(workflow.getSignalId());
             orderRequest.setOrderSide(workflow.getOrderSide());
             PaperTradeOrderResultDto result = paperTradeSimulationService.execute(orderRequest);
+            alignPaperOrderTraceId(result == null ? null : result.getOrderId(), workflow.getTraceId());
             workflow.setPaperOrderId(result.getOrderId());
             workflow.setPaperOrderStatus(result.getStatus());
             workflow.setPaperOrderResultJson(toJson(result));
@@ -599,8 +597,34 @@ public class OrderApprovalPipelineService {
         event.setErrorCode(trim(errorCode, 80));
         event.setRequestJson(toJson(request == null ? Map.of() : request));
         event.setResponseJson(toJson(response == null ? Map.of() : response));
-        event.setTraceId(safe(workflow.getTraceId()).isBlank() ? traceId() : workflow.getTraceId());
+        event.setTraceId(pipelineTraceId(workflow));
         eventLogRepository.save(event);
+    }
+
+    private String pipelineTraceId(OrderApprovalWorkflowEntity workflow) {
+        if (workflow != null) {
+            String existing = safe(workflow.getTraceId());
+            if (!existing.isBlank()) {
+                return existing;
+            }
+        }
+        return currentRequestTraceId();
+    }
+
+    private void alignPaperOrderTraceId(Long paperOrderId, String pipelineTraceId) {
+        if (paperOrderId == null) {
+            return;
+        }
+        String normalizedTraceId = safe(pipelineTraceId);
+        if (normalizedTraceId.isBlank()) {
+            return;
+        }
+        paperTradeOrderRepository.findById(paperOrderId).ifPresent(order -> {
+            if (!normalizedTraceId.equals(safe(order.getTraceId()))) {
+                order.setTraceId(normalizedTraceId);
+                paperTradeOrderRepository.save(order);
+            }
+        });
     }
 
     private OrderApprovalWorkflowStageType parseStage(String stage) {
@@ -697,11 +721,15 @@ public class OrderApprovalPipelineService {
         return normalized.substring(0, Math.max(0, max));
     }
 
-    private String traceId() {
+    private String currentRequestTraceId() {
         String trace = MDC.get("trace_id");
         if (trace != null && !trace.isBlank()) {
             return trace;
         }
         return UUID.randomUUID().toString();
+    }
+
+    private String traceId() {
+        return currentRequestTraceId();
     }
 }

@@ -181,9 +181,13 @@ public class SystemFeatureToggleService {
     }
 
     private String normalizeFeatureKey(String value) {
-        return String.valueOf(value)
+        String normalized = String.valueOf(value)
                 .trim()
                 .toUpperCase(Locale.ROOT);
+        if ("AUTO_ORDER_WITH_APPROVAL".equals(normalized)) {
+            return "AUTO_ORDER_WITH_ADMIN_APPROVAL";
+        }
+        return normalized;
     }
 
     private String normalizeScopeValue(FeatureScopeType scopeType, String scopeValue) {

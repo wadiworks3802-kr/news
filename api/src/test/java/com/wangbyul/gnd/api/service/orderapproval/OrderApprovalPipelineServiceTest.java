@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -87,13 +88,15 @@ class OrderApprovalPipelineServiceTest {
 
         when(workflowRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(eventLogRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-        when(eventLogRepository.findTop300ByWorkflowIdOrderByCreatedAtDesc(any())).thenReturn(List.of());
-        when(paperTradeOrderRepository.findById(any())).thenReturn(Optional.empty());
+        lenient().when(paperTradeOrderRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        lenient().when(eventLogRepository.findTop300ByWorkflowIdOrderByCreatedAtDesc(any())).thenReturn(List.of());
+        lenient().when(paperTradeOrderRepository.findById(any())).thenReturn(Optional.empty());
     }
 
     @Test
     void approveAndRejectShouldUpdateStageAndWriteAuditLog() {
         OrderApprovalWorkflowEntity workflow = baseWorkflow(101L, OrderApprovalWorkflowStageType.RECOMMEND);
+        workflow.setTraceId("pipeline-trace-101");
         when(workflowRepository.findById(101L)).thenReturn(Optional.of(workflow));
         when(systemFeatureToggleService.isFeatureEnabled(eq("AUTO_ORDER_WITH_ADMIN_APPROVAL"), any(), any(), any()))
                 .thenReturn(false);
@@ -107,9 +110,11 @@ class OrderApprovalPipelineServiceTest {
         Map<?, ?> approvedWorkflow = (Map<?, ?>) approved.get("workflow");
         assertThat(approvedWorkflow.get("current_stage")).isEqualTo("APPROVE");
         assertThat(approvedWorkflow.get("approved_by")).isEqualTo("admin1");
+        assertThat(approvedWorkflow.get("trace_id")).isEqualTo("pipeline-trace-101");
         assertThat(approved.get("auto_order_with_admin_approval_enabled")).isEqualTo(false);
 
         OrderApprovalWorkflowEntity rejectWorkflow = baseWorkflow(202L, OrderApprovalWorkflowStageType.RECOMMEND);
+        rejectWorkflow.setTraceId("pipeline-trace-202");
         when(workflowRepository.findById(202L)).thenReturn(Optional.of(rejectWorkflow));
 
         OrderApprovalRejectRequest reject = new OrderApprovalRejectRequest();
@@ -119,6 +124,7 @@ class OrderApprovalPipelineServiceTest {
         Map<?, ?> rejectedWorkflow = (Map<?, ?>) rejected.get("workflow");
         assertThat(rejectedWorkflow.get("current_stage")).isEqualTo("REJECTED");
         assertThat(rejectedWorkflow.get("rejected_by")).isEqualTo("admin2");
+        assertThat(rejectedWorkflow.get("trace_id")).isEqualTo("pipeline-trace-202");
 
         verify(eventLogRepository, atLeastOnce()).save(any());
     }
@@ -154,6 +160,7 @@ class OrderApprovalPipelineServiceTest {
         paperOrder.setStatus(OrderStatusType.FILLED);
         paperOrder.setRiskChecks("[]");
         paperOrder.setCreatedAt(OffsetDateTime.now());
+        paperOrder.setTraceId("paper-trace-initial");
         when(paperTradeOrderRepository.findById(700L)).thenReturn(Optional.of(paperOrder));
 
         OrderApprovalOrderRequest request = new OrderApprovalOrderRequest();
@@ -168,8 +175,70 @@ class OrderApprovalPipelineServiceTest {
         assertThat(workflowMap.get("live_trade_requested")).isEqualTo(false);
         assertThat(workflowMap.get("paper_order_id")).isEqualTo(700L);
         assertThat(workflowMap.get("live_trade_blocked_reason")).isEqualTo("LIVE_TRADE_DISABLED_DEFAULT_OFF");
+        Map<?, ?> paperOrderMap = (Map<?, ?>) result.get("paper_order");
+        assertThat(paperOrderMap.get("trace_id")).isEqualTo(workflow.getTraceId());
         verify(paperTradeSimulationService).execute(any());
         verify(eventLogRepository, atLeastOnce()).save(any());
+    }
+
+    @Test
+    void requestPaperOrderShouldForcePaperAndPreserveTraceEvenIfLiveTradeConfigured() {
+        ReflectionTestUtils.setField(service, "liveTradeEnabledProperty", true);
+
+        OrderApprovalWorkflowEntity workflow = baseWorkflow(404L, OrderApprovalWorkflowStageType.APPROVE);
+        workflow.setSignalId("sig-404");
+        workflow.setAssetCode("AAA1");
+        workflow.setOrderSide(OrderSideType.BUY);
+        workflow.setTraceId("pipeline-trace-404");
+        when(workflowRepository.findById(404L)).thenReturn(Optional.of(workflow));
+        when(systemFeatureToggleService.isFeatureEnabled(eq("LIVE_TRADE"), any(), any(), any())).thenReturn(true);
+
+        PaperTradeOrderResultDto paperResult = PaperTradeOrderResultDto.builder()
+                .orderId(701L)
+                .assetCode("AAA1")
+                .status(OrderStatusType.FILLED)
+                .requestRatio(BigDecimal.valueOf(0.2d))
+                .requestAmount(BigDecimal.valueOf(100000))
+                .executedPrice(BigDecimal.valueOf(50000))
+                .executedAmount(BigDecimal.valueOf(100000))
+                .riskChecks(List.of("BUY_LOCK:PASS"))
+                .createdAt(OffsetDateTime.now())
+                .build();
+        when(paperTradeSimulationService.execute(any())).thenReturn(paperResult);
+
+        PaperTradeOrderEntity paperOrder = new PaperTradeOrderEntity();
+        paperOrder.setId(701L);
+        paperOrder.setAssetCode("AAA1");
+        paperOrder.setSignalId("sig-404");
+        paperOrder.setOrderSide(OrderSideType.BUY);
+        paperOrder.setStatus(OrderStatusType.FILLED);
+        paperOrder.setRiskChecks("[]");
+        paperOrder.setCreatedAt(OffsetDateTime.now());
+        paperOrder.setTraceId("paper-trace-initial");
+        when(paperTradeOrderRepository.findById(701L)).thenReturn(Optional.of(paperOrder));
+
+        OrderApprovalOrderRequest request = new OrderApprovalOrderRequest();
+        request.setRequestedBy("admin-ui");
+        request.setRequestReason("live 설정이 있어도 준비단계에서는 paper only");
+        request.setForcePaper(false);
+
+        Map<String, Object> result = service.requestPaperOrder(404L, request);
+        Map<?, ?> workflowMap = (Map<?, ?>) result.get("workflow");
+        assertThat(workflowMap.get("current_stage")).isEqualTo("ORDER_EXECUTED");
+        assertThat(workflowMap.get("trace_id")).isEqualTo("pipeline-trace-404");
+        assertThat(workflowMap.get("order_execution_mode")).isEqualTo("PAPER_ONLY");
+        assertThat(workflowMap.get("live_trade_requested")).isEqualTo(false);
+        assertThat(workflowMap.get("live_trade_blocked_reason")).isEqualTo("LIVE_TRADE_FORCED_OFF_PREPARATION_STAGE");
+        assertThat(workflowMap.get("paper_order_id")).isEqualTo(701L);
+        Map<?, ?> paperOrderMap = (Map<?, ?>) result.get("paper_order");
+        assertThat(paperOrderMap.get("trace_id")).isEqualTo("pipeline-trace-404");
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> events = (List<Map<String, Object>>) result.get("events");
+        assertThat(events).isNotNull();
+        assertThat(events).allSatisfy(event -> assertThat(event.get("trace_id")).isEqualTo("pipeline-trace-404"));
+
+        verify(paperTradeSimulationService).execute(any());
     }
 
     private OrderApprovalWorkflowEntity baseWorkflow(Long id, OrderApprovalWorkflowStageType stage) {
