@@ -128,6 +128,16 @@ window.api = {
     }
     return body;
   },
+  async getAssistantQa(params = {}, options = {}) {
+    const base = window.API_BASE || "http://localhost:8080";
+    const qs = new URLSearchParams(params).toString();
+    const res = await fetch(`${base}/api/insight/assistant/qa?${qs}`, { signal: options.signal });
+    const body = await res.json();
+    if (!res.ok) {
+      throw body;
+    }
+    return body;
+  },
   async getPortfolioRisk(params = {}, options = {}) {
     const base = window.API_BASE || "http://localhost:8080";
     const qs = params && Object.keys(params).length ? `?${new URLSearchParams(params).toString()}` : "";
@@ -236,6 +246,13 @@ window.api = {
   },
   async getDiagNewsAssetMapping(params, options = {}) {
     return this.adminFetch("/api/admin/diagnostics/news-asset-mapping", {
+      params,
+      signal: options.signal,
+      apiKey: options.apiKey || ""
+    });
+  },
+  async getDiagNewsThumbnails(params, options = {}) {
+    return this.adminFetch("/api/admin/diagnostics/news/thumbnails", {
       params,
       signal: options.signal,
       apiKey: options.apiKey || ""

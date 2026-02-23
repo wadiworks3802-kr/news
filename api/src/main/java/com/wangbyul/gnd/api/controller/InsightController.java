@@ -625,6 +625,30 @@ public class InsightController {
     }
 
     /**
+     * AI 비서 질의응답 (가능 범위).
+     *
+     * 규칙 엔진 상세 결과와 최근 RAG 감사로그를 재사용해 설명/근거를 정리하며,
+     * 규칙 엔진 action을 변경하지 않는다.
+     */
+    @GetMapping("/insight/assistant/qa")
+    public ApiEnvelope<Map<String, Object>> getAssistantQa(
+            @RequestParam(name = "signal_id") @NotBlank String signalId,
+            @RequestParam(name = "q") @NotBlank String question) {
+        Map<String, Object> data = assistantDashboardService.answerQuestion(signalId, question);
+        String assetCode = Objects.toString(data.get("asset_code"), "");
+        Map<String, Object> metaBase = new LinkedHashMap<>();
+        metaBase.put("signal_id", signalId);
+        metaBase.put("q_len", question.length());
+        metaBase.put("view", "assistant_qa");
+        metaBase.put("rule_engine_priority", true);
+        return ApiEnvelope.<Map<String, Object>>builder()
+                .data(data)
+                .meta(metaWithMarketDataContext(metaBase, assetCode.isBlank() ? List.of() : List.of(assetCode)))
+                .traceId(traceId())
+                .build();
+    }
+
+    /**
      * 정책 전/후 백테스트 비교 리포트.
      */
     @GetMapping("/insight/backtest/compare")

@@ -874,15 +874,25 @@ public class AdminDiagnosticsService {
                     item.put("request_key", blankAs(row.getRequestKey(), ""));
                     item.put("signal_id", blankAs(row.getSignalId(), ""));
                     item.put("asset_code", blankAs(row.getAssetCode(), ""));
+                    item.put("model_version", blankAs(row.getModelVersion(), ""));
+                    item.put("prompt_version", blankAs(row.getPromptVersion(), ""));
                     item.put("fallback_applied", Boolean.TRUE.equals(row.getFallbackApplied()));
+                    item.put("fallback_used", Boolean.TRUE.equals(row.getFallbackApplied()));
+                    item.put("fallback_reason", blankAs(row.getErrorCode(), ""));
                     item.put("success", Boolean.TRUE.equals(row.getSuccess()));
                     item.put("error_code", blankAs(row.getErrorCode(), ""));
                     item.put("latency_ms_total", row.getLatencyMsTotal());
+                    List<Map<String, Object>> ragRefs = parseJsonMapList(row.getRagContextRefsJson());
+                    item.put("rag_context_ref_count", ragRefs.size());
+                    item.put("rag_context_refs", ragRefs.stream().limit(6).toList());
+                    item.put("rag_context_refs_json", blankAs(row.getRagContextRefsJson(), "[]"));
                     item.put("created_at", row.getCreatedAt());
                     item.put("trace_id", blankAs(row.getTraceId(), ""));
                     return item;
                 }).toList()));
         data.put("feature_toggles", toggles);
+        data.put("trace_propagation", tracePropagationSummary());
+        data.put("trace_lookup_guide", traceLookupGuide(traceId, safeLimit));
         if (includeAssistant) {
             Map<String, Object> assistantSummary = assistantRagService.assistTraceDetail(traceId, data, includeAssistant);
             data.put("assistant_summary", assistantSummary);
@@ -1010,6 +1020,7 @@ public class AdminDiagnosticsService {
                 .map(AssistantRagAuditLogEntity::getErrorCode)
                 .filter(code -> containsIgnoreCase(code, "TIMEOUT"))
                 .count();
+        long successCountWindow = rows.stream().filter(row -> Boolean.TRUE.equals(row.getSuccess())).count();
         BigDecimal avgLatency = rows.stream()
                 .map(AssistantRagAuditLogEntity::getLatencyMsTotal)
                 .filter(Objects::nonNull)
@@ -1021,20 +1032,46 @@ public class AdminDiagnosticsService {
             avgLatency = zero(2);
         }
 
+        Map<String, Long> fallbackReasonDistribution = new LinkedHashMap<>();
+        Map<String, Long> modelVersionDistribution = new LinkedHashMap<>();
+        Map<String, Long> promptVersionDistribution = new LinkedHashMap<>();
+        Map<String, Map<String, Object>> scopeMetrics = ragScopeMetrics(rows);
+        for (AssistantRagAuditLogEntity row : rows) {
+            if (Boolean.TRUE.equals(row.getFallbackApplied()) || !Boolean.TRUE.equals(row.getSuccess())) {
+                incrementCount(fallbackReasonDistribution, blankAs(row.getErrorCode(), "NONE"));
+            }
+            incrementCount(modelVersionDistribution, blankAs(row.getModelVersion(), "UNKNOWN"));
+            incrementCount(promptVersionDistribution, blankAs(row.getPromptVersion(), "UNKNOWN"));
+        }
+
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("window_hours", Math.max(1, Math.min(hours, 72)));
         data.put("total_count", totalCount);
         data.put("failed_count", failedCount);
+        data.put("success_count_window", successCountWindow);
         data.put("fallback_count", fallbackCount);
         data.put("timeout_count", timeoutCount);
+        data.put("fallback_rate", rows.isEmpty()
+                ? zero(6)
+                : BigDecimal.valueOf(fallbackCount).divide(BigDecimal.valueOf(rows.size()), 6, RoundingMode.HALF_UP));
         data.put("success_rate", totalCount <= 0
                 ? zero(6)
                 : BigDecimal.valueOf(totalCount - failedCount).divide(BigDecimal.valueOf(totalCount), 6, RoundingMode.HALF_UP));
         data.put("avg_latency_ms", avgLatency);
+        data.put("p95_latency_ms", latencyPercentile(rows, 0.95d));
+        data.put("max_latency_ms", rows.stream()
+                .map(AssistantRagAuditLogEntity::getLatencyMsTotal)
+                .filter(Objects::nonNull)
+                .max(Long::compareTo)
+                .orElse(0L));
         data.put("scope_distribution", rows.stream().collect(Collectors.groupingBy(
                 row -> blankAs(row.getRequestScope(), "UNKNOWN"),
                 LinkedHashMap::new,
                 Collectors.counting())));
+        data.put("scope_metrics", scopeMetrics);
+        data.put("fallback_reason_distribution", fallbackReasonDistribution);
+        data.put("model_version_distribution", modelVersionDistribution);
+        data.put("prompt_version_distribution", promptVersionDistribution);
         data.put("recent_errors", rows.stream()
                 .filter(row -> !Boolean.TRUE.equals(row.getSuccess()) || Boolean.TRUE.equals(row.getFallbackApplied()))
                 .limit(8)
@@ -1043,13 +1080,35 @@ public class AdminDiagnosticsService {
                     item.put("request_scope", blankAs(row.getRequestScope(), ""));
                     item.put("request_key", blankAs(row.getRequestKey(), ""));
                     item.put("asset_code", blankAs(row.getAssetCode(), ""));
+                    item.put("model_version", blankAs(row.getModelVersion(), ""));
+                    item.put("prompt_version", blankAs(row.getPromptVersion(), ""));
                     item.put("error_code", blankAs(row.getErrorCode(), ""));
                     item.put("fallback_applied", Boolean.TRUE.equals(row.getFallbackApplied()));
+                    item.put("fallback_used", Boolean.TRUE.equals(row.getFallbackApplied()));
+                    item.put("fallback_reason", blankAs(row.getErrorCode(), ""));
                     item.put("latency_ms_total", row.getLatencyMsTotal());
+                    item.put("rag_context_ref_count", parseJsonMapList(row.getRagContextRefsJson()).size());
                     item.put("created_at", row.getCreatedAt());
                     return item;
                 })
                 .toList());
+        data.put("recent_samples", rows.stream()
+                .limit(8)
+                .map(row -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("request_scope", blankAs(row.getRequestScope(), ""));
+                    item.put("request_key", blankAs(row.getRequestKey(), ""));
+                    item.put("success", Boolean.TRUE.equals(row.getSuccess()));
+                    item.put("fallback_used", Boolean.TRUE.equals(row.getFallbackApplied()));
+                    item.put("fallback_reason", blankAs(row.getErrorCode(), ""));
+                    item.put("model_version", blankAs(row.getModelVersion(), ""));
+                    item.put("prompt_version", blankAs(row.getPromptVersion(), ""));
+                    item.put("latency_ms_total", row.getLatencyMsTotal());
+                    item.put("rag_context_ref_count", parseJsonMapList(row.getRagContextRefsJson()).size());
+                    item.put("trace_id", blankAs(row.getTraceId(), ""));
+                    item.put("created_at", row.getCreatedAt());
+                    return item;
+                }).toList());
         return data;
     }
 
@@ -1076,6 +1135,30 @@ public class AdminDiagnosticsService {
                 .toList();
     }
 
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> parseJsonMapList(String rawJson) {
+        if (isBlank(rawJson)) {
+            return List.of();
+        }
+        try {
+            Object parsed = objectMapper.readValue(rawJson, new TypeReference<>() {});
+            if (!(parsed instanceof List<?> rows)) {
+                return List.of();
+            }
+            return rows.stream()
+                    .filter(Map.class::isInstance)
+                    .map(Map.class::cast)
+                    .map(map -> {
+                        Map<String, Object> item = new LinkedHashMap<>();
+                        map.forEach((key, value) -> item.put(String.valueOf(key), value));
+                        return item;
+                    })
+                    .toList();
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
     private Map<String, Long> castLongMap(Object value) {
         if (!(value instanceof Map<?, ?> map)) {
             return Map.of();
@@ -1085,6 +1168,91 @@ public class AdminDiagnosticsService {
                 entry -> entry.getValue() instanceof Number number ? number.longValue() : 0L,
                 (a, b) -> a,
                 LinkedHashMap::new));
+    }
+
+    private void incrementCount(Map<String, Long> counter, String key) {
+        if (counter == null) {
+            return;
+        }
+        counter.merge(blankAs(key, "UNKNOWN"), 1L, Long::sum);
+    }
+
+    private long latencyPercentile(List<AssistantRagAuditLogEntity> rows, double percentile) {
+        if (rows == null || rows.isEmpty()) {
+            return 0L;
+        }
+        List<Long> latencies = rows.stream()
+                .map(AssistantRagAuditLogEntity::getLatencyMsTotal)
+                .filter(Objects::nonNull)
+                .sorted()
+                .toList();
+        if (latencies.isEmpty()) {
+            return 0L;
+        }
+        int index = (int) Math.ceil(Math.max(0d, Math.min(1d, percentile)) * latencies.size()) - 1;
+        index = Math.max(0, Math.min(index, latencies.size() - 1));
+        return latencies.get(index);
+    }
+
+    private Map<String, Map<String, Object>> ragScopeMetrics(List<AssistantRagAuditLogEntity> rows) {
+        Map<String, List<AssistantRagAuditLogEntity>> grouped = rows == null
+                ? Map.of()
+                : rows.stream().collect(Collectors.groupingBy(
+                        row -> blankAs(row.getRequestScope(), "UNKNOWN"),
+                        LinkedHashMap::new,
+                        Collectors.toList()));
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        for (Map.Entry<String, List<AssistantRagAuditLogEntity>> entry : grouped.entrySet()) {
+            List<AssistantRagAuditLogEntity> scopeRows = entry.getValue();
+            long fallbackCount = scopeRows.stream().filter(row -> Boolean.TRUE.equals(row.getFallbackApplied())).count();
+            long failedCount = scopeRows.stream().filter(row -> !Boolean.TRUE.equals(row.getSuccess())).count();
+            BigDecimal avgLatency = scopeRows.stream()
+                    .map(AssistantRagAuditLogEntity::getLatencyMsTotal)
+                    .filter(Objects::nonNull)
+                    .map(BigDecimal::valueOf)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            if (!scopeRows.isEmpty()) {
+                avgLatency = avgLatency.divide(BigDecimal.valueOf(scopeRows.size()), 2, RoundingMode.HALF_UP);
+            } else {
+                avgLatency = zero(2);
+            }
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("count", scopeRows.size());
+            item.put("fallback_count", fallbackCount);
+            item.put("failed_count", failedCount);
+            item.put("success_rate", scopeRows.isEmpty()
+                    ? zero(6)
+                    : BigDecimal.valueOf(scopeRows.size() - failedCount).divide(BigDecimal.valueOf(scopeRows.size()), 6, RoundingMode.HALF_UP));
+            item.put("fallback_rate", scopeRows.isEmpty()
+                    ? zero(6)
+                    : BigDecimal.valueOf(fallbackCount).divide(BigDecimal.valueOf(scopeRows.size()), 6, RoundingMode.HALF_UP));
+            item.put("avg_latency_ms", avgLatency);
+            item.put("p95_latency_ms", latencyPercentile(scopeRows, 0.95d));
+            result.put(entry.getKey(), item);
+        }
+        return result;
+    }
+
+    private Map<String, Object> traceLookupGuide(String traceId, int limit) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("trace_id", blankAs(traceId, ""));
+        data.put("recommended_limit", Math.max(1, Math.min(limit, 300)));
+        data.put("lookup_steps", List.of(
+                "1) /api/admin/diagnostics/trace-detail?trace_id={trace_id} 로 전체 타임라인/요약 확인",
+                "2) market_collection.provider_audits 에서 provider/latency/success 확인",
+                "3) market_collection.gap_events 로 데이터 결측/지연 원인 확인",
+                "4) signals.strategy_runs / signal_audits 로 전략 실행/차단 사유 확인",
+                "5) signals.assistant_rag_audits 로 RAG fallback/model/prompt/latency 확인",
+                "6) feature_toggles 로 당시 토글 상태(LIVE_TRADE/RAG_ASSISTANT 등) 확인"));
+        data.put("search_paths", List.of(
+                "/api/admin/diagnostics/market-collection/provider-audit?trace_id={trace_id}",
+                "/api/admin/diagnostics/market-collection/gaps?trace_id={trace_id}",
+                "/api/admin/diagnostics/signals/audit?trace_id={trace_id}",
+                "/api/admin/diagnostics/trace-detail?trace_id={trace_id}&assistant=true"));
+        data.put("notes", List.of(
+                "trace_id는 API envelope, 주요 감사 테이블, RAG 감사 로그에 저장된다.",
+                "RAG fallback 여부는 fallback_used/fallback_reason 필드와 assistant_summary를 함께 확인한다."));
+        return data;
     }
 
     private BigDecimal avg(

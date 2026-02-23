@@ -100,7 +100,12 @@ window.store = {
     assistantSelectedAssetCode: "",
     assistantDetail: null,
     assistantDetailTraceId: "",
-    assistantDetailLoading: false
+    assistantDetailLoading: false,
+    assistantQaQuestion: "",
+    assistantQaAnswer: null,
+    assistantQaTraceId: "",
+    assistantQaLoading: false,
+    assistantQaError: null
   },
   set(next) {
     // 기존 상태를 유지한 채 전달된 값만 병합 갱신

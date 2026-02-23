@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wangbyul.gnd.api.dto.BuyLockStatusDto;
 import com.wangbyul.gnd.api.dto.PaperTradeRiskDto;
+import com.wangbyul.gnd.api.dto.SignalDetailDto;
 import com.wangbyul.gnd.api.dto.TradingSignalViewDto;
 import com.wangbyul.gnd.api.service.AdminDiagnosticsService;
 import com.wangbyul.gnd.api.service.SystemFeatureToggleService;
@@ -100,6 +101,121 @@ public class AssistantDashboardService {
         data.put("selected_asset_code", selectedAssetCode);
         data.put("generated_at", OffsetDateTime.now());
         return data;
+    }
+
+    /**
+     * AI 비서 Q&A (가능 범위: 현재 선택 종목 상세 근거 기반 요약 질의응답).
+     *
+     * 비용 통제를 위해 추가 모델 호출은 하지 않고 규칙 엔진 상세 DTO + 최근 SIGNAL_DETAIL RAG 감사로그를 재사용한다.
+     * 규칙 엔진 판단(action)은 변경하지 않으며 설명/요약만 보강한다.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> answerQuestion(String signalId, String question) {
+        String safeSignalId = safeString(signalId);
+        String safeQuestion = safeString(question);
+        if (safeSignalId.isBlank()) {
+            throw new IllegalArgumentException("signal_id is required");
+        }
+        if (safeQuestion.isBlank()) {
+            throw new IllegalArgumentException("q is required");
+        }
+
+        List<AssistantRagAuditLogEntity> signalRagAudits = assistantRagAuditLogRepository.findTop100BySignalIdOrderByCreatedAtDesc(safeSignalId)
+                .stream()
+                .filter(row -> "SIGNAL_DETAIL".equalsIgnoreCase(safeString(row.getRequestScope())))
+                .toList();
+        AssistantRagAuditLogEntity ragAudit = signalRagAudits.stream()
+                .filter(row -> !"ASSISTANT_REQUEST_OFF".equalsIgnoreCase(safeString(row.getErrorCode())))
+                .findFirst()
+                .orElse(signalRagAudits.stream().findFirst().orElse(null));
+        SignalDetailDto detail = tradingSignalEngineService.getSignalDetail(safeSignalId, false);
+        if (detail == null) {
+            throw new IllegalArgumentException("signal detail not found: " + safeSignalId);
+        }
+
+        Map<String, Object> breakdown = parseJsonMap(detail.getProbabilityReasonBreakdownJson());
+        List<Map<String, Object>> detailRagRefs = parseJsonMapList(detail.getRagContextRefsJson());
+        Map<String, Object> riskGuide = detail.getRiskGuidance() == null ? Map.of() : detail.getRiskGuidance();
+        List<String> newsEvidence = limitLines(detail.getNewsEvidence(), 4);
+        List<String> chartEvidence = limitLines(detail.getChartEvidence(), 4);
+        List<String> volumeEvidence = limitLines(detail.getVolumeEvidence(), 3);
+        List<String> riskEvidence = limitLines(detail.getRiskEvidence(), 4);
+        List<String> missing = limitLines(detail.getMissingRequirements(), 4);
+        List<String> changes = limitLines(detail.getChangeConditions(), 4);
+
+        Map<String, Object> ragAuditOutput = ragAudit == null ? Map.of() : parseJsonMap(ragAudit.getOutputJson());
+        List<Map<String, Object>> ragAuditRefs = ragAudit == null ? List.of() : parseJsonMapList(ragAudit.getRagContextRefsJson());
+        List<String> ragEvidence = limitLines(stringList(ragAuditOutput.get("evidence_bullets")), 4);
+        List<String> ragCautions = limitLines(stringList(ragAuditOutput.get("caution_bullets")), 4);
+        String ragSummary = safeString(ragAuditOutput.get("summary"));
+
+        String questionType = classifyQuestionType(safeQuestion);
+        String answerText = buildQaAnswerText(
+                questionType,
+                safeQuestion,
+                detail,
+                breakdown,
+                riskGuide,
+                newsEvidence,
+                chartEvidence,
+                volumeEvidence,
+                riskEvidence,
+                missing,
+                changes,
+                ragSummary,
+                ragEvidence,
+                ragCautions);
+
+        Map<String, Object> ragSupport = new LinkedHashMap<>();
+        ragSupport.put("source", ragAudit == null ? "RULE_ONLY" : "RAG_AUDIT_REUSED");
+        ragSupport.put("audit_found", ragAudit != null);
+        ragSupport.put("fallback_used", ragAudit != null && Boolean.TRUE.equals(ragAudit.getFallbackApplied()));
+        ragSupport.put("fallback_reason", ragAudit == null ? "" : safeString(ragAudit.getErrorCode()));
+        ragSupport.put("success", ragAudit != null && Boolean.TRUE.equals(ragAudit.getSuccess()));
+        ragSupport.put("model_version", ragAudit == null ? "" : safeString(ragAudit.getModelVersion()));
+        ragSupport.put("prompt_version", ragAudit == null ? "" : safeString(ragAudit.getPromptVersion()));
+        ragSupport.put("latency_ms_total", ragAudit == null ? 0L : (ragAudit.getLatencyMsTotal() == null ? 0L : ragAudit.getLatencyMsTotal()));
+        ragSupport.put("summary", ragSummary);
+        ragSupport.put("evidence_bullets", ragEvidence);
+        ragSupport.put("caution_bullets", ragCautions);
+        ragSupport.put("rag_context_ref_count", ragAuditRefs.isEmpty() ? detailRagRefs.size() : ragAuditRefs.size());
+        ragSupport.put("rag_context_refs", ragAuditRefs.isEmpty() ? detailRagRefs.stream().limit(6).toList() : ragAuditRefs.stream().limit(6).toList());
+
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("news", newsEvidence);
+        evidence.put("chart", chartEvidence);
+        evidence.put("volume", volumeEvidence);
+        evidence.put("risk", riskEvidence);
+        evidence.put("missing_requirements", missing);
+        evidence.put("change_conditions", changes);
+        evidence.put("rag_context_refs", detailRagRefs.stream().limit(8).toList());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("signal_id", safeString(detail.getSignalId()));
+        result.put("asset_code", safeString(detail.getAssetCode()));
+        result.put("asset_name", safeString(detail.getAssetName()));
+        result.put("question", safeQuestion);
+        result.put("question_type", questionType);
+        result.put("answer", answerText);
+        result.put("current_action", detail.getAction() == null ? "WATCH" : detail.getAction().name());
+        result.put("rule_engine_priority", true);
+        result.put("rule_engine_action_locked", true);
+        result.put("combined_confidence", scale(detail.getCombinedConfidence(), 4));
+        result.put("good_news_probability", scale(detail.getGoodNewsProbability(), 4));
+        result.put("bad_news_probability", scale(detail.getBadNewsProbability(), 4));
+        String detailDataState = safeString(detail.getDataState());
+        result.put("data_state", safeString(detailDataState.isBlank() ? breakdown.get("data_state") : detailDataState));
+        result.put("blocked_reason", safeString(detail.getBlockedReason()));
+        result.put("decision_why", safeString(detail.getDecisionWhy()));
+        result.put("risk_guidance", riskGuide);
+        result.put("evidence", evidence);
+        result.put("rag_support", ragSupport);
+        result.put("warnings", List.of(
+                "규칙 엔진 판단(action)을 변경하지 않는 설명/요약용 응답입니다.",
+                "실주문 결정 전에는 최신 시세/뉴스/토글 상태를 다시 확인하세요."));
+        result.put("suggested_questions", suggestedQuestions(detail));
+        result.put("generated_at", OffsetDateTime.now());
+        return result;
     }
 
     private TradingSignalViewDto resolvePositionSignal(
@@ -510,6 +626,248 @@ public class AssistantDashboardService {
         } catch (Exception ignored) {
         }
         return Map.of();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> parseJsonMapList(String rawJson) {
+        if (rawJson == null || rawJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            Object parsed = objectMapper.readValue(rawJson, new TypeReference<>() {});
+            if (!(parsed instanceof List<?> list)) {
+                return List.of();
+            }
+            return list.stream()
+                    .filter(Map.class::isInstance)
+                    .map(Map.class::cast)
+                    .map(row -> {
+                        Map<String, Object> result = new LinkedHashMap<>();
+                        row.forEach((key, value) -> result.put(String.valueOf(key), value));
+                        return result;
+                    })
+                    .toList();
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
+    private String classifyQuestionType(String question) {
+        String q = safeString(question).toLowerCase(Locale.ROOT);
+        if (containsAny(q, "왜", "이유", "근거", "설명")) {
+            return "WHY";
+        }
+        if (containsAny(q, "리스크", "위험", "몰빵", "비중", "잠금", "lock")) {
+            return "RISK";
+        }
+        if (containsAny(q, "뉴스", "호재", "악재", "불확실")) {
+            return "NEWS";
+        }
+        if (containsAny(q, "차트", "압력", "거래량", "평단", "추매")) {
+            return "CHART";
+        }
+        if (containsAny(q, "익절", "손절", "매도", "sell")) {
+            return "SELL_PLAN";
+        }
+        if (containsAny(q, "매수", "buy", "진입")) {
+            return "BUY_PLAN";
+        }
+        if (containsAny(q, "언제", "조건", "바뀌", "변경")) {
+            return "CHANGE_TRIGGER";
+        }
+        return "GENERAL";
+    }
+
+    private String buildQaAnswerText(
+            String questionType,
+            String question,
+            SignalDetailDto detail,
+            Map<String, Object> breakdown,
+            Map<String, Object> riskGuide,
+            List<String> newsEvidence,
+            List<String> chartEvidence,
+            List<String> volumeEvidence,
+            List<String> riskEvidence,
+            List<String> missing,
+            List<String> changes,
+            String ragSummary,
+            List<String> ragEvidence,
+            List<String> ragCautions) {
+        String action = detail.getAction() == null ? "WATCH" : detail.getAction().name();
+        String detailDataState = safeString(detail.getDataState());
+        String dataState = safeString(detailDataState.isBlank() ? breakdown.get("data_state") : detailDataState);
+        BigDecimal good = scale(detail.getGoodNewsProbability(), 3);
+        BigDecimal bad = scale(detail.getBadNewsProbability(), 3);
+        BigDecimal confidence = scale(detail.getCombinedConfidence(), 3);
+        String blocked = safeString(detail.getBlockedReason());
+        boolean buyLock = Boolean.TRUE.equals(riskGuide.get("buy_lock_active"));
+        String tp = safeString(riskGuide.get("take_profit_pct"));
+        String sl = safeString(riskGuide.get("stop_loss_pct"));
+        String avgDownAllowed = Boolean.TRUE.equals(riskGuide.get("avg_down_allowed")) ? "허용" : "보류";
+
+        List<String> lines = new ArrayList<>();
+        lines.add("현재 규칙 엔진 결정은 " + action + "이며, 이 Q&A는 결정을 변경하지 않고 근거를 정리합니다.");
+        if (!blocked.isBlank()) {
+            lines.add("전략/리스크 차단 사유가 감지되어 있습니다: " + blocked);
+        }
+        if (!dataState.isBlank()) {
+            lines.add("데이터 상태는 " + dataState + " 입니다.");
+        }
+
+        switch (safeString(questionType)) {
+            case "WHY" -> {
+                lines.add("결합신뢰 " + confidence + " / 호재 " + good + " / 악재 " + bad + " 기준으로 규칙 엔진이 판단했습니다.");
+                appendTopLine(lines, "판단 사유", safeString(detail.getDecisionWhy()));
+                appendEvidenceLines(lines, "뉴스 근거", newsEvidence, 2);
+                appendEvidenceLines(lines, "차트/압력 근거", mergeLists(chartEvidence, volumeEvidence), 2);
+                appendEvidenceLines(lines, "리스크 근거", riskEvidence, 2);
+            }
+            case "NEWS" -> {
+                lines.add("뉴스 해석은 단정이 아니라 확률/근거 분리로 표시됩니다.");
+                appendEvidenceLines(lines, "뉴스 근거", newsEvidence, 3);
+                if (!ragSummary.isBlank()) {
+                    appendTopLine(lines, "RAG 보조요약", ragSummary);
+                }
+                appendEvidenceLines(lines, "RAG 근거요약", ragEvidence, 2);
+                appendEvidenceLines(lines, "RAG 주의점", ragCautions, 2);
+            }
+            case "CHART" -> {
+                appendEvidenceLines(lines, "차트/압력 근거", chartEvidence, 3);
+                appendEvidenceLines(lines, "거래량/압력 보조근거", volumeEvidence, 2);
+                lines.add("평단가 대응(추매형)은 현재 " + avgDownAllowed + " 상태이며, BUY_LOCK/차단 사유를 우선 확인해야 합니다.");
+            }
+            case "RISK" -> {
+                appendEvidenceLines(lines, "리스크 근거", riskEvidence, 3);
+                lines.add("BUY_LOCK 상태: " + (buyLock ? "활성(재분석 전 매수 금지)" : "비활성"));
+                if (!tp.isBlank() || !sl.isBlank()) {
+                    lines.add("참고 정책값: 익절 " + blankIfEmpty(tp, "-") + "% / 손절 " + blankIfEmpty(sl, "-") + "%");
+                }
+                if (!blocked.isBlank()) {
+                    lines.add("차단 사유 해소 전에는 액션 변경을 가정하지 마세요.");
+                }
+            }
+            case "BUY_PLAN" -> {
+                lines.add("매수 관련 질문이지만 최종 결정은 규칙 엔진/리스크 정책이 우선입니다.");
+                lines.add("현재 규칙 엔진 액션: " + action + (buyLock ? " (BUY_LOCK 활성)" : ""));
+                appendTopLine(lines, "분할매수 가이드", safeString(riskGuide.get("buy_split_ratios")));
+                appendTopLine(lines, "평단가 대응", "현재 " + avgDownAllowed + " / 단계 " + safeString(riskGuide.get("avg_down_stage")));
+                appendEvidenceLines(lines, "매수 전 확인 조건", missing, 2);
+            }
+            case "SELL_PLAN" -> {
+                lines.add("매도/익절/손절 질문은 정책 참고값 기준으로만 요약합니다 (실주문 신호 아님).");
+                if (!tp.isBlank() || !sl.isBlank()) {
+                    lines.add("정책 참고값: 익절 " + blankIfEmpty(tp, "-") + "% / 손절 " + blankIfEmpty(sl, "-") + "%");
+                }
+                appendTopLine(lines, "분할매도 가이드", safeString(riskGuide.get("sell_split_ratios")));
+                appendEvidenceLines(lines, "리스크 근거", riskEvidence, 2);
+            }
+            case "CHANGE_TRIGGER" -> {
+                appendEvidenceLines(lines, "변경 조건", changes, 3);
+                appendEvidenceLines(lines, "부족 요건", missing, 3);
+            }
+            default -> {
+                appendTopLine(lines, "질문 요약", safeString(question));
+                lines.add("현재 액션 " + action + " / 결합신뢰 " + confidence + " / 데이터상태 " + blankIfEmpty(dataState, "-"));
+                appendTopLine(lines, "핵심 사유", safeString(detail.getDecisionWhy()));
+                appendEvidenceLines(lines, "주요 근거", mergeLists(newsEvidence, chartEvidence, riskEvidence), 3);
+                appendEvidenceLines(lines, "변경 조건", changes, 2);
+            }
+        }
+
+        if (lines.stream().noneMatch(line -> line.contains("RAG 보조요약")) && !ragSummary.isBlank()) {
+            lines.add("RAG 보조요약(참고): " + ragSummary);
+        }
+        return String.join(" ", lines.stream().filter(v -> v != null && !v.isBlank()).limit(10).toList());
+    }
+
+    private void appendTopLine(List<String> lines, String label, String value) {
+        if (lines == null || value == null || value.isBlank()) {
+            return;
+        }
+        lines.add(label + ": " + value);
+    }
+
+    private void appendEvidenceLines(List<String> lines, String label, List<String> values, int limit) {
+        if (lines == null || values == null || values.isEmpty()) {
+            return;
+        }
+        List<String> filtered = values.stream()
+                .filter(v -> v != null && !v.isBlank())
+                .limit(Math.max(1, limit))
+                .toList();
+        if (filtered.isEmpty()) {
+            return;
+        }
+        lines.add(label + ": " + String.join(" / ", filtered));
+    }
+
+    @SafeVarargs
+    private List<String> mergeLists(List<String>... parts) {
+        List<String> merged = new ArrayList<>();
+        if (parts == null) {
+            return merged;
+        }
+        for (List<String> part : parts) {
+            if (part == null) {
+                continue;
+            }
+            for (String row : part) {
+                if (row != null && !row.isBlank()) {
+                    merged.add(row);
+                }
+            }
+        }
+        return merged;
+    }
+
+    private List<String> limitLines(List<String> values, int limit) {
+        if (values == null) {
+            return List.of();
+        }
+        return values.stream()
+                .filter(v -> v != null && !v.isBlank())
+                .map(String::trim)
+                .limit(Math.max(1, limit))
+                .toList();
+    }
+
+    private List<String> stringList(Object value) {
+        if (!(value instanceof List<?> rows)) {
+            return List.of();
+        }
+        return rows.stream()
+                .map(this::safeString)
+                .filter(v -> !v.isBlank())
+                .toList();
+    }
+
+    private boolean containsAny(String text, String... tokens) {
+        if (text == null || tokens == null) {
+            return false;
+        }
+        for (String token : tokens) {
+            if (token != null && !token.isBlank() && text.contains(token.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String blankIfEmpty(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private List<String> suggestedQuestions(SignalDetailDto detail) {
+        String asset = safeString(detail == null ? null : detail.getAssetName());
+        if (asset.isBlank()) {
+            asset = safeString(detail == null ? null : detail.getAssetCode());
+        }
+        String prefix = asset.isBlank() ? "이 종목" : asset;
+        return List.of(
+                prefix + " 왜 " + (detail != null && detail.getAction() != null ? detail.getAction().name() : "WATCH") + " 인가?",
+                prefix + " 뉴스 근거와 불확실성은?",
+                prefix + " 차트/압력 기준 리스크는?",
+                prefix + " 매수/매도 전에 바뀌어야 할 조건은?");
     }
 
     private BigDecimal decimal(Object value) {

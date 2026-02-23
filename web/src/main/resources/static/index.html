@@ -158,6 +158,18 @@
           </header>
           <div id="assistant-risk-panel" class="assistant-risk-panel"></div>
         </article>
+        <article class="assistant-card">
+          <header class="assistant-card-head">
+            <h3>AI 비서 설명 / Q&A (가능 범위)</h3>
+            <span id="assistant-qa-meta">질문 대기</span>
+          </header>
+          <div class="assistant-controls">
+            <input id="assistant-qa-question" type="text" placeholder="예) 왜 WATCH 인가? / 뉴스 근거는?" aria-label="AI 비서 질문" />
+            <button id="assistant-qa-ask" type="button">질문</button>
+          </div>
+          <div id="assistant-qa-presets" class="assistant-strategy-tabs"></div>
+          <div id="assistant-qa-panel" class="assistant-detail-panel"></div>
+        </article>
       </section>
     </section>
 
@@ -199,6 +211,10 @@
         <article class="admin-card">
           <h3>매핑/티커 진단</h3>
           <div id="admin-mapping"></div>
+        </article>
+        <article class="admin-card">
+          <h3>뉴스 썸네일 진단</h3>
+          <div id="admin-thumbnails"></div>
         </article>
         <article class="admin-card">
           <h3>시그널 감사/정렬</h3>

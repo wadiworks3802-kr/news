@@ -379,6 +379,7 @@ async function loadAdminDiagnostics(options = {}) {
     const diversityController = createController();
     const tickerController = createController();
     const mappingController = createController();
+    const thumbnailController = createController();
     const auditController = createController();
     const alignmentController = createController();
     const confidenceController = createController();
@@ -394,6 +395,7 @@ async function loadAdminDiagnostics(options = {}) {
       universeDiversity,
       tickerAlias,
       mapping,
+      newsThumbnails,
       signalAudit,
       signalAlignment,
       signalConfidence,
@@ -429,6 +431,11 @@ async function loadAdminDiagnostics(options = {}) {
         country: store.state.country,
         refresh: false
       }, { signal: mappingController.signal, apiKey }).finally(() => removeController(mappingController)),
+      api.getDiagNewsThumbnails({
+        country: store.state.country,
+        hours: 72,
+        limit: 60
+      }, { signal: thumbnailController.signal, apiKey }).finally(() => removeController(thumbnailController)),
       api.getDiagSignalsAudit({
         country: store.state.country,
         limit: 40
@@ -463,6 +470,7 @@ async function loadAdminDiagnostics(options = {}) {
       universeDiversity,
       tickerAlias,
       mapping,
+      newsThumbnails,
       signalAudit,
       signalAlignment,
       signalConfidence,
@@ -734,7 +742,11 @@ async function loadAssistantSignalDetail(signalId, options = {}) {
       assistantSelectedSignalId: "",
       assistantDetail: null,
       assistantDetailTraceId: "",
-      assistantDetailLoading: false
+      assistantDetailLoading: false,
+      assistantQaAnswer: null,
+      assistantQaTraceId: "",
+      assistantQaError: null,
+      assistantQaLoading: false
     });
     ui.renderAssistantDetail(null, store.state.assistantDashboard);
     return;
@@ -757,7 +769,10 @@ async function loadAssistantSignalDetail(signalId, options = {}) {
     store.set({
       assistantDetail: result?.data || null,
       assistantDetailTraceId: result?.trace_id || "",
-      assistantDetailLoading: false
+      assistantDetailLoading: false,
+      assistantQaAnswer: null,
+      assistantQaTraceId: "",
+      assistantQaError: null
     });
     ui.renderAssistantDetail(store.state.assistantDetail, store.state.assistantDashboard, result?.trace_id || "");
   } catch (err) {
@@ -769,6 +784,71 @@ async function loadAssistantSignalDetail(signalId, options = {}) {
   } finally {
     removeController(controller);
   }
+}
+
+async function askAssistantQuestion(forcedQuestion = "") {
+  if (store.state.activeTab !== "assistant") {
+    return;
+  }
+  const signalId = (store.state.assistantSelectedSignalId || "").trim();
+  const question = (forcedQuestion || $("#assistant-qa-question").val() || "").trim();
+  if (!signalId) {
+    ui.renderAssistantError({ message: "질문할 종목(signal_id)을 먼저 선택해 주세요." });
+    return;
+  }
+  if (!question) {
+    store.set({ assistantQaError: { message: "질문을 입력해 주세요." } });
+    ui.renderAssistantQaPanel(store.state);
+    return;
+  }
+
+  const controller = createController();
+  try {
+    store.set({
+      assistantQaQuestion: question,
+      assistantQaLoading: true,
+      assistantQaError: null
+    });
+    ui.renderAssistantQaPanel(store.state);
+    const result = await api.getAssistantQa({
+      signal_id: signalId,
+      q: question
+    }, { signal: controller.signal });
+    if (store.state.activeTab !== "assistant") {
+      return;
+    }
+    if ((store.state.assistantSelectedSignalId || "").trim() !== signalId) {
+      return;
+    }
+    store.set({
+      assistantQaAnswer: result?.data || null,
+      assistantQaTraceId: result?.trace_id || "",
+      assistantQaLoading: false,
+      assistantQaError: null
+    });
+    ui.renderAssistantQaPanel(store.state);
+  } catch (err) {
+    if (isAbortError(err)) {
+      return;
+    }
+    store.set({
+      assistantQaLoading: false,
+      assistantQaError: err
+    });
+    ui.renderAssistantQaPanel(store.state);
+  } finally {
+    removeController(controller);
+  }
+}
+
+function useAssistantQaPreset(question) {
+  const q = (question || "").trim();
+  if (!q) {
+    return;
+  }
+  $("#assistant-qa-question").val(q);
+  store.set({ assistantQaQuestion: q });
+  askAssistantQuestion(q);
 }
 
 async function loadAssistantDashboard(options = {}) {
@@ -803,7 +883,11 @@ async function loadAssistantDashboard(options = {}) {
       assistantError: null,
       assistantSelectedStrategy: nextStrategy,
       assistantSelectedSignalId: nextSignalId,
-      assistantSelectedAssetCode: dashboard?.selected_asset_code || ""
+      assistantSelectedAssetCode: dashboard?.selected_asset_code || "",
+      assistantQaAnswer: null,
+      assistantQaTraceId: "",
+      assistantQaError: null,
+      assistantQaLoading: false
     });
     ui.renderAssistantDashboard(store.state);
 
@@ -840,7 +924,15 @@ function changeAssistantStrategy(strategyKey) {
   if (nextSignalId) {
     loadAssistantSignalDetail(nextSignalId, { forceWhenHidden: true });
   } else {
-    store.set({ assistantDetail: null, assistantDetailTraceId: "", assistantSelectedSignalId: "" });
+    store.set({
+      assistantDetail: null,
+      assistantDetailTraceId: "",
+      assistantSelectedSignalId: "",
+      assistantQaAnswer: null,
+      assistantQaTraceId: "",
+      assistantQaError: null,
+      assistantQaLoading: false
+    });
     ui.renderAssistantDetail(null, dashboard);
   }
 }
@@ -848,7 +940,11 @@ function changeAssistantStrategy(strategyKey) {
 function selectAssistantSignal(signalId, assetCode) {
   store.set({
     assistantSelectedSignalId: (signalId || "").trim(),
-    assistantSelectedAssetCode: (assetCode || "").trim()
+    assistantSelectedAssetCode: (assetCode || "").trim(),
+    assistantQaAnswer: null,
+    assistantQaTraceId: "",
+    assistantQaError: null,
+    assistantQaLoading: false
   });
   ui.renderAssistantDashboard(store.state);
   if (signalId) {
@@ -1014,6 +1110,8 @@ $(function () {
     () => loadAssistantDashboard({ forceWhenHidden: true, skipPush: true }),
     changeAssistantStrategy,
     selectAssistantSignal,
+    () => askAssistantQuestion(),
+    useAssistantQaPreset,
     () => loadAdminDiagnostics({ forceWhenHidden: true }),
     loadAdminTraceDetail,
     upsertFeatureToggle,

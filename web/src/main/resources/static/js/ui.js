@@ -17,6 +17,8 @@ window.ui = {
     onAssistantRefresh,
     onAssistantStrategyChange,
     onAssistantSignalSelect,
+    onAssistantQaAsk,
+    onAssistantQaPreset,
     onAdminRefresh,
     onAdminTraceLoad,
     onToggleUpsert,
@@ -83,6 +85,23 @@ window.ui = {
       const assetCode = ($(this).attr("data-asset-code") || "").trim();
       if (signalId) {
         onAssistantSignalSelect(signalId, assetCode);
+      }
+    });
+    $("#assistant-qa-ask").on("click", () => {
+      if (typeof onAssistantQaAsk === "function") {
+        onAssistantQaAsk();
+      }
+    });
+    $("#assistant-qa-question").on("keydown", (evt) => {
+      if (evt.key === "Enter" && typeof onAssistantQaAsk === "function") {
+        evt.preventDefault();
+        onAssistantQaAsk();
+      }
+    });
+    $(document).on("click", ".assistant-qa-preset-btn", function () {
+      const question = ($(this).attr("data-question") || "").trim();
+      if (question && typeof onAssistantQaPreset === "function") {
+        onAssistantQaPreset(question);
       }
     });
     $("#admin-refresh").on("click", onAdminRefresh);
@@ -668,6 +687,9 @@ window.ui = {
     $("#assistant-risk-panel").html('<div class="empty-box">리스크/자금관리 데이터를 준비 중입니다...</div>');
     $("#assistant-detail-meta").text("상세 대기");
     $("#assistant-detail-panel").html('<div class="empty-box">종목을 선택하면 뉴스/가격/리스크 근거를 표시합니다.</div>');
+    $("#assistant-qa-meta").text("질문 대기");
+    $("#assistant-qa-presets").html("");
+    $("#assistant-qa-panel").html('<div class="empty-box">종목 상세가 로드되면 질문할 수 있습니다.</div>');
   },
 
   renderAssistantError(err) {
@@ -729,6 +751,7 @@ window.ui = {
     const locks = Array.isArray(dashboard.locks) ? dashboard.locks : [];
     $("#assistant-risk-meta").text(`모의/참고용 정책 · BUY_LOCK ${locks.length}건`);
     $("#assistant-risk-panel").html(this.renderAssistantRiskPanel(risk, locks));
+    this.renderAssistantQaPanel(store.state);
   },
 
   renderAssistantStatusBar(statusBar, providerStatus, collectionStatus, ragRuntime, warnings) {
@@ -1067,7 +1090,102 @@ window.ui = {
           <h4>trace/근거 링크</h4>
           <div class="assistant-detail-line">trace_id: ${this.escapeHtml(traceId || "")}</div>
           <div class="assistant-detail-line">rag_context_refs: ${Array.isArray(ragRefs) ? ragRefs.length : 0}건</div>
-          <div class="assistant-detail-line">AI 비서 질의응답 영역은 다음 차수에서 연결 예정(현재는 근거 기반 요약만 제공)</div>
+          <div class="assistant-detail-line">질문은 아래 Q&A 패널에서 처리됩니다 (규칙 엔진 결정 유지 · 설명/요약 전용)</div>
+        </section>
+      </div>
+    `);
+    this.renderAssistantQaPanel(store.state);
+  },
+
+  renderAssistantQaPanel(state) {
+    const detail = state?.assistantDetail || null;
+    const answer = state?.assistantQaAnswer || null;
+    const loading = Boolean(state?.assistantQaLoading);
+    const error = state?.assistantQaError;
+    const currentQuestion = String(state?.assistantQaQuestion || "");
+    const selectedSignalId = String(state?.assistantSelectedSignalId || detail?.signal_id || "");
+    if ($("#assistant-qa-question").length) {
+      $("#assistant-qa-question").val(currentQuestion);
+      $("#assistant-qa-question").prop("disabled", !selectedSignalId || loading);
+    }
+    $("#assistant-qa-ask").prop("disabled", !selectedSignalId || loading);
+
+    let presetQuestions = [];
+    if (Array.isArray(answer?.suggested_questions) && answer.suggested_questions.length) {
+      presetQuestions = answer.suggested_questions;
+    } else if (detail) {
+      const asset = detail.asset_name || detail.asset_code || "이 종목";
+      presetQuestions = [
+        `${asset} 왜 ${detail.action || "WATCH"} 인가?`,
+        `${asset} 뉴스 근거와 불확실성은?`,
+        `${asset} 차트/압력 기준 리스크는?`,
+        `${asset} 액션이 바뀌려면 무엇이 필요한가?`
+      ];
+    }
+    $("#assistant-qa-presets").html(
+      presetQuestions.slice(0, 4).map((q) => `<button type="button" class="assistant-strategy-tab assistant-qa-preset-btn" data-question="${this.escapeAttr(q)}">${this.escapeHtml(q)}</button>`).join("")
+    );
+
+    if (!selectedSignalId) {
+      $("#assistant-qa-meta").text("질문 대기");
+      $("#assistant-qa-panel").html('<div class="empty-box">관심종목/전략 후보를 선택한 뒤 질문하세요.</div>');
+      return;
+    }
+    if (loading) {
+      $("#assistant-qa-meta").text(`질문 처리 중 · signal_id=${this.escapeHtml(selectedSignalId)}`);
+      $("#assistant-qa-panel").html('<div class="empty-box">규칙 엔진 상세 근거와 RAG 감사로그를 기준으로 답변을 정리 중...</div>');
+      return;
+    }
+    if (error) {
+      const msg = this.escapeHtml(error?.message || error?.code || "Q&A 응답 실패");
+      $("#assistant-qa-meta").text(`Q&A 오류 · signal_id=${this.escapeHtml(selectedSignalId)}`);
+      $("#assistant-qa-panel").html(`<div class="empty-box">${msg}</div>`);
+      return;
+    }
+    if (!answer) {
+      $("#assistant-qa-meta").text(`질문 대기 · signal_id=${this.escapeHtml(selectedSignalId)}`);
+      $("#assistant-qa-panel").html('<div class="empty-box">예시 질문 버튼을 누르거나 직접 질문을 입력하세요. 규칙 엔진 결정은 바꾸지 않고 설명만 제공합니다.</div>');
+      return;
+    }
+
+    const rag = answer.rag_support || {};
+    const evidence = answer.evidence || {};
+    const warningLines = Array.isArray(answer.warnings) ? answer.warnings : [];
+    const newsLines = Array.isArray(evidence.news) ? evidence.news : [];
+    const chartLines = Array.isArray(evidence.chart) ? evidence.chart : [];
+    const riskLines = Array.isArray(evidence.risk) ? evidence.risk : [];
+    const ragRefCount = Number(rag.rag_context_ref_count || 0);
+    const fallbackUsed = Boolean(rag.fallback_used);
+
+    $("#assistant-qa-meta").text(
+      `${this.escapeHtml(answer.asset_name || answer.asset_code || "-")} · ${this.escapeHtml(answer.question_type || "GENERAL")} · trace_id=${this.escapeHtml(state?.assistantQaTraceId || "")}`
+    );
+    $("#assistant-qa-panel").html(`
+      <div class="assistant-detail-grid">
+        <section class="assistant-detail-card">
+          <h4>질문</h4>
+          <div class="assistant-detail-line">${this.escapeHtml(answer.question || currentQuestion || "-")}</div>
+          <div class="assistant-detail-line">현재 규칙 엔진 액션 ${this.escapeHtml(answer.current_action || "WATCH")} · 결합신뢰 ${Number(answer.combined_confidence || 0).toFixed(3)}</div>
+          <div class="assistant-detail-line">차단사유 ${this.escapeHtml(answer.blocked_reason || "-")} · data_state ${this.escapeHtml(answer.data_state || "-")}</div>
+        </section>
+        <section class="assistant-detail-card">
+          <h4>답변 (설명/요약 전용)</h4>
+          <div class="assistant-detail-line">${this.escapeHtml(answer.answer || "-")}</div>
+          ${warningLines.map((line) => `<div class="assistant-detail-line">${this.escapeHtml(String(line))}</div>`).join("")}
+        </section>
+        <section class="assistant-detail-card">
+          <h4>근거 묶음</h4>
+          ${newsLines.slice(0, 3).map((line) => `<div class="assistant-detail-line">뉴스: ${this.escapeHtml(String(line))}</div>`).join("")}
+          ${chartLines.slice(0, 3).map((line) => `<div class="assistant-detail-line">차트: ${this.escapeHtml(String(line))}</div>`).join("")}
+          ${riskLines.slice(0, 3).map((line) => `<div class="assistant-detail-line">리스크: ${this.escapeHtml(String(line))}</div>`).join("")}
+          ${(!newsLines.length && !chartLines.length && !riskLines.length) ? '<div class="assistant-detail-line">추출된 근거 요약 없음</div>' : ""}
+        </section>
+        <section class="assistant-detail-card">
+          <h4>RAG 보조(감사로그 재사용)</h4>
+          <div class="assistant-detail-line">source=${this.escapeHtml(rag.source || "RULE_ONLY")} · fallback=${fallbackUsed} · reason=${this.escapeHtml(rag.fallback_reason || "-")}</div>
+          <div class="assistant-detail-line">model=${this.escapeHtml(rag.model_version || "-")} / prompt=${this.escapeHtml(rag.prompt_version || "-")} / latency=${this.num(rag.latency_ms_total, 0)}ms</div>
+          <div class="assistant-detail-line">rag_context_refs=${ragRefCount}건</div>
+          <div class="assistant-detail-line">${this.escapeHtml(rag.summary || "재사용 가능한 RAG 요약 없음 (규칙 기반만 사용)")}</div>
         </section>
       </div>
     `);
@@ -1132,6 +1250,7 @@ window.ui = {
       "#admin-provider-audit",
       "#admin-universe",
       "#admin-mapping",
+      "#admin-thumbnails",
       "#admin-signals",
       "#admin-toggles",
       "#admin-order-approvals",
@@ -1157,6 +1276,7 @@ window.ui = {
     const diversity = diag.universeDiversity?.data || {};
     const tickerAlias = diag.tickerAlias?.data || {};
     const mapping = diag.mapping?.data || {};
+    const thumbnails = diag.newsThumbnails?.data || {};
     const signalAudit = diag.signalAudit?.data || {};
     const signalAlignment = diag.signalAlignment?.data || {};
     const signalConfidence = diag.signalConfidence?.data || {};
@@ -1196,10 +1316,14 @@ window.ui = {
       : '<div class="empty-box">갭 이벤트 없음</div>');
 
     const providerItems = Array.isArray(providerAudit.items) ? providerAudit.items.slice(0, 8) : [];
+    const providerDist = providerAudit.provider_distribution || providerAudit.provider_name_distribution || summary.recent_quote_provider_distribution || {};
+    const providerRuntime = summary.provider_runtime_config || {};
     $("#admin-provider-audit").html(`
       <div class="admin-kv">성공률 ${this.pct(providerAudit.success_rate)}</div>
       <div class="admin-kv">평균 지연 ${this.num(providerAudit.avg_latency_ms, 2)} ms</div>
       <div class="admin-kv">실패 ${Number(providerAudit.failed_count || 0)}건</div>
+      <div class="admin-kv">provider 분포 ${this.escapeHtml(JSON.stringify(providerDist))}</div>
+      <div class="admin-kv">active ${this.escapeHtml(providerRuntime.active_provider || summary.provider_name || "-")} / allowMock=${Boolean(providerRuntime.allow_mock)}</div>
       ${providerItems.map((row) => `
         <div class="admin-row">
           <span>${this.escapeHtml(row.provider || "-")} / ${this.escapeHtml(row.api_name || "-")}</span>
@@ -1221,11 +1345,31 @@ window.ui = {
       <div class="admin-kv">매핑 오탐률 ${this.pct(mapping.latest?.theme_match_false_positive_rate)}</div>
       <div class="admin-kv">과확장률 ${this.pct(mapping.latest?.country_theme_overexpansion_rate)}</div>
       <div class="admin-kv">샘플 ${Number(mapping.latest?.sample_size || 0)}건</div>
+      <div class="admin-kv">매핑 품질 latest ${this.escapeHtml(JSON.stringify(mapping.latest || {}))}</div>
+    `);
+
+    const thumbItems = Array.isArray(thumbnails.items) ? thumbnails.items.slice(0, 8) : [];
+    const thumbSuccessRate = thumbnails.success_rate ?? thumbnails.thumbnail_success_rate;
+    const thumbTotal = thumbnails.sample_size ?? thumbnails.total_count;
+    $("#admin-thumbnails").html(`
+      <div class="admin-kv">썸네일 성공률 ${this.pct(thumbSuccessRate)}</div>
+      <div class="admin-kv">실패/빈값 ${Number(thumbnails.failed_or_empty_count || 0)}건 / 전체 ${Number(thumbTotal || 0)}건</div>
+      <div class="admin-kv">status 분포 ${this.escapeHtml(JSON.stringify(thumbnails.thumbnail_status_distribution || {}))}</div>
+      <div class="admin-kv">source 분포 ${this.escapeHtml(JSON.stringify(thumbnails.thumbnail_source_distribution || {}))}</div>
+      <div class="admin-kv">host 상위 ${this.escapeHtml(JSON.stringify(thumbnails.thumbnail_host_distribution_top || {}))}</div>
+      ${thumbItems.map((row) => `
+        <div class="admin-row">
+          <span>${this.escapeHtml(row.thumbnail_status || "-")} / ${this.escapeHtml(row.thumbnail_source || "-")}</span>
+          <span>${this.escapeHtml(row.thumbnail_host || "-")}</span>
+          <span>${this.escapeHtml(row.id || row.news_id || "-")}</span>
+        </div>
+      `).join("") || '<div class="empty-box">썸네일 샘플 없음</div>'}
     `);
 
     const signalItems = Array.isArray(signalAudit.items) ? signalAudit.items.slice(0, 6) : [];
     const signalByStrategy = signalConfidence.action_distribution_by_strategy || {};
     const duplicateSignalStats = signalConfidence.duplicate_exposure_stats || {};
+    const ragScopeMetrics = ragSummary.scope_metrics || {};
     $("#admin-signals").html(`
       <div class="admin-kv">감사 로그 ${Number(signalAudit.count || 0)}건 / 차단 ${Number(signalAudit.blocked_count || 0)}건</div>
       <div class="admin-kv">미래데이터 차단 ${Number(signalAlignment.future_data_blocked_count || 0)}건</div>
@@ -1233,7 +1377,10 @@ window.ui = {
       <div class="admin-kv">저신뢰 시그널 ${Number(signalConfidence.low_confidence_count || 0)}건</div>
       <div class="admin-kv">전략별 액션 분포 ${this.escapeHtml(JSON.stringify(signalByStrategy))}</div>
       <div class="admin-kv">중복노출 통계 ${this.escapeHtml(JSON.stringify(duplicateSignalStats))}</div>
-      <div class="admin-kv">RAG 성공률 ${this.pct(ragSummary.success_rate)} / fallback ${Number(ragSummary.fallback_count || 0)} / timeout ${Number(ragSummary.timeout_count || 0)} / 평균지연 ${this.num(ragSummary.avg_latency_ms, 2)}ms</div>
+      <div class="admin-kv">RAG 성공률 ${this.pct(ragSummary.success_rate)} / fallback ${Number(ragSummary.fallback_count || 0)} / timeout ${Number(ragSummary.timeout_count || 0)} / 평균지연 ${this.num(ragSummary.avg_latency_ms, 2)}ms / p95 ${this.num(ragSummary.p95_latency_ms, 0)}ms</div>
+      <div class="admin-kv">RAG scope metrics ${this.escapeHtml(JSON.stringify(ragScopeMetrics))}</div>
+      <div class="admin-kv">RAG fallback 사유 ${this.escapeHtml(JSON.stringify(ragSummary.fallback_reason_distribution || {}))}</div>
+      <div class="admin-kv">RAG model/prompt ${this.escapeHtml(JSON.stringify(ragSummary.model_version_distribution || {}))} / ${this.escapeHtml(JSON.stringify(ragSummary.prompt_version_distribution || {}))}</div>
       ${signalItems.map((row) => `
         <div class="admin-row">
           <span>${this.escapeHtml(row.asset_code || "-")}</span>
@@ -1355,6 +1502,8 @@ window.ui = {
     const counts = data.counts || {};
     const marketCollection = data.market_collection || {};
     const signals = data.signals || {};
+    const tracePropagation = data.trace_propagation || {};
+    const traceLookupGuide = data.trace_lookup_guide || {};
     const qualityRows = Array.isArray(marketCollection.quality_snapshots) ? marketCollection.quality_snapshots.slice(0, 5) : [];
     const gapRows = Array.isArray(marketCollection.gap_events) ? marketCollection.gap_events.slice(0, 5) : [];
     const providerRows = Array.isArray(marketCollection.provider_audits) ? marketCollection.provider_audits.slice(0, 5) : [];
@@ -1369,6 +1518,7 @@ window.ui = {
       <div class="admin-kv">assistant_source ${this.escapeHtml(assistant.source || "-")} / fallback=${Boolean(assistant.fallback_applied)} / latency=${this.num(assistant.latency_ms_total, 0)}ms</div>
       <div class="admin-kv">assistant_highlights ${this.escapeHtml(assistantHighlights.join(" | ") || "-")}</div>
       <div class="admin-kv">assistant_cautions ${this.escapeHtml(assistantCautions.join(" | ") || "-")}</div>
+      <div class="admin-kv">trace_propagation ${this.escapeHtml(JSON.stringify(tracePropagation || {}))}</div>
       <div class="admin-trace-sections">
         <section>
           <h4>수집 품질/Provider</h4>
@@ -1382,8 +1532,13 @@ window.ui = {
           ${signalAudits.map((row) => `<div class="admin-row"><span>${this.escapeHtml(row.asset_code || "-")} / ${this.escapeHtml(row.engine_type || "-")}</span><span>${this.escapeHtml(row.blocked_reason || "-")}</span><span>${this.escapeHtml(row.signal_id || "-")}</span></div>`).join("") || ""}
         </section>
         <section>
+          <h4>trace 추적 동선</h4>
+          ${(Array.isArray(traceLookupGuide.lookup_steps) ? traceLookupGuide.lookup_steps : []).map((line) => `<div class="admin-kv">${this.escapeHtml(String(line))}</div>`).join("") || '<div class="empty-box">동선 가이드 없음</div>'}
+          ${(Array.isArray(traceLookupGuide.search_paths) ? traceLookupGuide.search_paths : []).map((line) => `<div class="admin-kv">${this.escapeHtml(String(line))}</div>`).join("")}
+        </section>
+        <section>
           <h4>RAG 감사 로그</h4>
-          ${assistantAudits.map((row) => `<div class="admin-row"><span>${this.escapeHtml(row.request_scope || "-")} / ${this.escapeHtml(row.request_key || "-")}</span><span>fallback=${Boolean(row.fallback_applied)}</span><span>${this.escapeHtml(row.error_code || "-")} · ${this.num(row.latency_ms_total, 0)}ms</span></div>`).join("") || '<div class="empty-box">RAG 감사 로그 없음</div>'}
+          ${assistantAudits.map((row) => `<div class="admin-row"><span>${this.escapeHtml(row.request_scope || "-")} / ${this.escapeHtml(row.request_key || "-")}</span><span>fallback=${Boolean(row.fallback_used)}(${this.escapeHtml(row.fallback_reason || "-")})</span><span>${this.escapeHtml(row.model_version || "-")} / ${this.escapeHtml(row.prompt_version || "-")} · ${this.num(row.latency_ms_total, 0)}ms · refs ${Number(row.rag_context_ref_count || 0)}</span></div>`).join("") || '<div class="empty-box">RAG 감사 로그 없음</div>'}
         </section>
       </div>
     `);
