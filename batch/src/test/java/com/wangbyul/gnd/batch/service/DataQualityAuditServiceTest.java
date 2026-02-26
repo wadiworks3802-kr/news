@@ -12,6 +12,7 @@ import com.wangbyul.gnd.core.repository.MarketDataGapEventRepository;
 import com.wangbyul.gnd.core.repository.MarketDataQualitySnapshotRepository;
 import com.wangbyul.gnd.core.repository.MarketPriceBarRepository;
 import com.wangbyul.gnd.core.repository.MarketQuoteSnapshotRepository;
+import com.wangbyul.gnd.core.market.provider.MarketDataProviderRouter;
 import com.wangbyul.gnd.core.util.SensitiveDataMaskingUtil;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -43,6 +44,8 @@ class DataQualityAuditServiceTest {
     private MarketDataGapEventRepository marketDataGapEventRepository;
     @Mock
     private ApiResponseAuditRepository apiResponseAuditRepository;
+    @Mock
+    private MarketDataProviderRouter marketDataProviderRouter;
 
     @Test
     void calculateQualityMetricsShouldReturnLowerScoreWhenMissingRateHigh() {
@@ -53,6 +56,7 @@ class DataQualityAuditServiceTest {
                 marketDataQualitySnapshotRepository,
                 marketDataGapEventRepository,
                 apiResponseAuditRepository,
+                marketDataProviderRouter,
                 new ObjectMapper(),
                 new SensitiveDataMaskingUtil());
 
@@ -78,6 +82,7 @@ class DataQualityAuditServiceTest {
                 marketDataQualitySnapshotRepository,
                 marketDataGapEventRepository,
                 apiResponseAuditRepository,
+                marketDataProviderRouter,
                 new ObjectMapper(),
                 new SensitiveDataMaskingUtil());
         ReflectionTestUtils.setField(service, "apiResponseAuditRetentionDays", 7);

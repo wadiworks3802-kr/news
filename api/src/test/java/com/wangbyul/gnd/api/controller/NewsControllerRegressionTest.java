@@ -38,6 +38,7 @@ import org.springframework.test.web.servlet.MockMvc;
         "app.security.admin-api-key=test-admin-key",
         "app.security.cors-allowlist=http://localhost:8081"
 })
+@SuppressWarnings("removal")
 class NewsControllerRegressionTest {
 
     @Autowired
@@ -90,4 +91,3 @@ class NewsControllerRegressionTest {
                 .andExpect(jsonPath("$.trace_id").exists());
     }
 }
-
