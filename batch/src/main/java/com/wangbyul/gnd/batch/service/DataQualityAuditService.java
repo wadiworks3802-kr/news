@@ -15,6 +15,7 @@ import com.wangbyul.gnd.core.repository.MarketDataGapEventRepository;
 import com.wangbyul.gnd.core.repository.MarketDataQualitySnapshotRepository;
 import com.wangbyul.gnd.core.repository.MarketPriceBarRepository;
 import com.wangbyul.gnd.core.repository.MarketQuoteSnapshotRepository;
+import com.wangbyul.gnd.core.market.provider.MarketDataProviderRouter;
 import com.wangbyul.gnd.core.util.SensitiveDataMaskingUtil;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -41,14 +42,13 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class DataQualityAuditService {
 
-    private static final String DEFAULT_PROVIDER = "MOCK";
-
     private final AssetUniverseRepository assetUniverseRepository;
     private final MarketQuoteSnapshotRepository marketQuoteSnapshotRepository;
     private final MarketPriceBarRepository marketPriceBarRepository;
     private final MarketDataQualitySnapshotRepository marketDataQualitySnapshotRepository;
     private final MarketDataGapEventRepository marketDataGapEventRepository;
     private final ApiResponseAuditRepository apiResponseAuditRepository;
+    private final MarketDataProviderRouter marketDataProviderRouter;
     private final ObjectMapper objectMapper;
     private final SensitiveDataMaskingUtil sensitiveDataMaskingUtil;
 
@@ -77,6 +77,7 @@ public class DataQualityAuditService {
             MarketDataQualitySnapshotRepository marketDataQualitySnapshotRepository,
             MarketDataGapEventRepository marketDataGapEventRepository,
             ApiResponseAuditRepository apiResponseAuditRepository,
+            MarketDataProviderRouter marketDataProviderRouter,
             ObjectMapper objectMapper,
             SensitiveDataMaskingUtil sensitiveDataMaskingUtil) {
         this.assetUniverseRepository = assetUniverseRepository;
@@ -85,6 +86,7 @@ public class DataQualityAuditService {
         this.marketDataQualitySnapshotRepository = marketDataQualitySnapshotRepository;
         this.marketDataGapEventRepository = marketDataGapEventRepository;
         this.apiResponseAuditRepository = apiResponseAuditRepository;
+        this.marketDataProviderRouter = marketDataProviderRouter;
         this.objectMapper = objectMapper;
         this.sensitiveDataMaskingUtil = sensitiveDataMaskingUtil;
     }
@@ -98,6 +100,7 @@ public class DataQualityAuditService {
         if (assets.isEmpty()) {
             return;
         }
+        String activeProvider = activeProviderName();
 
         Map<String, List<AssetUniverseEntity>> grouped = assets.stream()
                 .collect(java.util.stream.Collectors.groupingBy(asset -> groupKey(asset.getCountry(), asset.getTheme())));
@@ -146,7 +149,7 @@ public class DataQualityAuditService {
                     anomalyCount);
 
             MarketDataQualitySnapshotEntity snapshot = new MarketDataQualitySnapshotEntity();
-            snapshot.setProvider(DEFAULT_PROVIDER);
+            snapshot.setProvider(activeProvider);
             snapshot.setCountry(scope[0]);
             snapshot.setTheme(scope[1]);
             snapshot.setAssetCountExpected(expected);
@@ -174,7 +177,7 @@ public class DataQualityAuditService {
             if (metrics.qualityScore().compareTo(minimumQualityScore) < 0) {
                 saveGapEvent(
                         null,
-                        DEFAULT_PROVIDER,
+                        activeProvider,
                         null,
                         MarketGapEventType.DELAYED_QUOTE,
                         AuditSeverityType.WARN,
@@ -192,14 +195,19 @@ public class DataQualityAuditService {
     @Transactional
     public void runMarketDataGapDetection() {
         OffsetDateTime now = OffsetDateTime.now();
+        String activeProvider = activeProviderName();
         List<AssetUniverseEntity> assets = assetUniverseRepository.findByActiveTrueOrderByUpdatedAtDesc();
         for (AssetUniverseEntity asset : assets) {
             String assetCode = asset.getAssetCode();
             var quoteOpt = marketQuoteSnapshotRepository.findTop1ByAssetCodeOrderBySnapshotUtcDesc(assetCode);
+            String quoteProvider = quoteOpt
+                    .map(MarketQuoteSnapshotEntity::getProviderName)
+                    .map(this::normalizeProvider)
+                    .orElse(activeProvider);
             if (quoteOpt.isEmpty()) {
                 saveGapEvent(
                         assetCode,
-                        DEFAULT_PROVIDER,
+                        activeProvider,
                         null,
                         MarketGapEventType.DELAYED_QUOTE,
                         AuditSeverityType.WARN,
@@ -213,7 +221,7 @@ public class DataQualityAuditService {
                 if (delay > maxQuoteDelaySeconds) {
                     saveGapEvent(
                             assetCode,
-                            DEFAULT_PROVIDER,
+                            quoteProvider,
                             null,
                             MarketGapEventType.DELAYED_QUOTE,
                             AuditSeverityType.WARN,
@@ -225,10 +233,14 @@ public class DataQualityAuditService {
             }
 
             var barOpt = marketPriceBarRepository.findTop1ByAssetCodeAndTimeframeOrderByBarTimeDesc(assetCode, "1m");
+            String barProvider = barOpt
+                    .map(MarketPriceBarEntity::getProviderName)
+                    .map(this::normalizeProvider)
+                    .orElse(activeProvider);
             if (barOpt.isEmpty()) {
                 saveGapEvent(
                         assetCode,
-                        DEFAULT_PROVIDER,
+                        activeProvider,
                         "1m",
                         MarketGapEventType.MISSING_BAR,
                         AuditSeverityType.WARN,
@@ -242,7 +254,7 @@ public class DataQualityAuditService {
                 if (delay > maxBarDelaySeconds) {
                     saveGapEvent(
                             assetCode,
-                            DEFAULT_PROVIDER,
+                            barProvider,
                             "1m",
                             MarketGapEventType.MISSING_BAR,
                             AuditSeverityType.WARN,
@@ -256,7 +268,7 @@ public class DataQualityAuditService {
             if (hasTimeReversal(assetCode, "1m")) {
                 saveGapEvent(
                         assetCode,
-                        DEFAULT_PROVIDER,
+                        barProvider,
                         "1m",
                         MarketGapEventType.TIME_REVERSAL,
                         AuditSeverityType.ERROR,
@@ -318,7 +330,7 @@ public class DataQualityAuditService {
             boolean success,
             String errorCode) {
         ApiResponseAuditEntity entity = new ApiResponseAuditEntity();
-        entity.setProvider(defaultIfBlank(provider, DEFAULT_PROVIDER));
+        entity.setProvider(resolveProvider(provider));
         entity.setApiName(defaultIfBlank(apiName, "unknown-api"));
         entity.setRequestTimeUtc(requestTimeUtc == null ? OffsetDateTime.now() : requestTimeUtc);
         entity.setResponseTimeUtc(responseTimeUtc);
@@ -384,7 +396,7 @@ public class DataQualityAuditService {
             Map<String, Object> detail) {
         MarketDataGapEventEntity event = new MarketDataGapEventEntity();
         event.setAssetCode(assetCode);
-        event.setProvider(defaultIfBlank(provider, DEFAULT_PROVIDER));
+        event.setProvider(resolveProvider(provider));
         event.setTimeframe(timeframe);
         event.setEventType(eventType);
         event.setSeverity(severity);
@@ -482,6 +494,21 @@ public class DataQualityAuditService {
             return fallback;
         }
         return value.trim();
+    }
+
+    private String resolveProvider(String candidate) {
+        if (candidate != null && !candidate.isBlank()) {
+            return normalizeProvider(candidate);
+        }
+        return activeProviderName();
+    }
+
+    private String normalizeProvider(String candidate) {
+        return defaultIfBlank(candidate, activeProviderName()).toUpperCase();
+    }
+
+    private String activeProviderName() {
+        return defaultIfBlank(marketDataProviderRouter.activeProviderId(), "UNKNOWN").toUpperCase();
     }
 
     private String traceId() {

@@ -2,6 +2,6 @@
   "java.configuration.updateBuildConfiguration": "automatic",
   "java.compile.nullAnalysis.mode": "automatic",
   "java.import.gradle.wrapper.enabled": true,
-  "java.import.gradle.java.home": "${workspaceFolder}\\.tools\\jdk-21",
-  "java.jdt.ls.java.home": "${workspaceFolder}\\.tools\\jdk-21"
+  "java.import.gradle.java.home": "C:\\\\Program Files\\\\Eclipse Adoptium\\\\jdk-21.0.10.7-hotspot",
+  "java.jdt.ls.java.home": "C:\\\\Program Files\\\\Eclipse Adoptium\\\\jdk-21.0.10.7-hotspot"
 }

@@ -42,15 +42,15 @@ public class NewsLocalizationService {
      * ko 조회 시 번역이 미완료면 즉시 원문 fallback을 반환하고 비동기 번역을 예약한다.
      */
     public LocalizedContent localizeForView(NewsEntity entity, String viewLang) {
-        String rawTitle = defaultIfBlank(entity.getTitleRaw(), "(제목 없음)");
+        String rawTitle = normalizeDisplayText(defaultIfBlank(entity.getTitleRaw(), "(제목 없음)"), "(제목 없음)");
         String rawSummary = buildRawSummary(entity.getBodyRaw());
 
         if ("raw".equalsIgnoreCase(viewLang)) {
             return new LocalizedContent(rawTitle, rawSummary, false);
         }
 
-        String titleKo = defaultIfBlank(entity.getTitleKo(), rawTitle);
-        String summaryKo = defaultIfBlank(entity.getSummaryKo(), rawSummary);
+        String titleKo = normalizeDisplayText(defaultIfBlank(entity.getTitleKo(), rawTitle), rawTitle);
+        String summaryKo = normalizeDisplayText(defaultIfBlank(entity.getSummaryKo(), rawSummary), rawSummary);
 
         boolean pending = shouldQueueTranslation(entity, titleKo, summaryKo);
         if (pending) {
@@ -120,7 +120,7 @@ public class NewsLocalizationService {
 
     private void translateAndPersist(String newsId) {
         newsRepository.findById(newsId).ifPresent(news -> {
-            String rawTitle = defaultIfBlank(news.getTitleRaw(), "(제목 없음)");
+            String rawTitle = normalizeDisplayText(defaultIfBlank(news.getTitleRaw(), "(제목 없음)"), "(제목 없음)");
             String rawSummary = buildRawSummary(news.getBodyRaw());
 
             String translatedTitle = koreanTranslationService.toKorean(rawTitle);
@@ -151,8 +151,9 @@ public class NewsLocalizationService {
     }
 
     private String buildRawSummary(String bodyRaw) {
-        String plain = defaultIfBlank(bodyRaw, "")
+        String plain = decodeHtmlEntities(defaultIfBlank(bodyRaw, ""))
                 .replaceAll("<[^>]+>", " ")
+                .replaceAll("\u00A0", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
         if (plain.isBlank()) {
@@ -169,6 +170,36 @@ public class NewsLocalizationService {
             return fallback;
         }
         return value.trim();
+    }
+
+    private String normalizeDisplayText(String value, String fallback) {
+        String normalized = decodeHtmlEntities(defaultIfBlank(value, ""))
+                .replaceAll("\u00A0", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        return normalized.isBlank() ? defaultIfBlank(fallback, "") : normalized;
+    }
+
+    private String decodeHtmlEntities(String input) {
+        if (input == null || input.isBlank()) {
+            return "";
+        }
+        String decoded = input;
+        for (int i = 0; i < 2; i++) {
+            String next = decoded
+                    .replace("&nbsp;", " ")
+                    .replace("&#160;", " ")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&#39;", "'")
+                    .replace("&amp;", "&");
+            if (next.equals(decoded)) {
+                break;
+            }
+            decoded = next;
+        }
+        return decoded;
     }
 
     public record LocalizedContent(String title, String summary, boolean translationPending) {

@@ -117,6 +117,11 @@ public class FetchServiceImpl implements FetchService {
                     log.info("Duplicate skipped: {}", normalized.getUrlNorm());
                     continue;
                 }
+                if (normalized.getUrlNorm() != null
+                        && newsRepository.findByUrlNorm(normalized.getUrlNorm()).isPresent()) {
+                    log.info("Duplicate url skipped before insert: {}", normalized.getUrlNorm());
+                    continue;
+                }
 
                 try {
                     // flush를 즉시 수행해 unique(url_norm) 충돌을 같은 루프에서 처리
@@ -185,6 +190,10 @@ public class FetchServiceImpl implements FetchService {
             OffsetDateTime pubUtc,
             OffsetDateTime fetchedAt,
             String rssThumbnailUrl) {
+        String rawTitle = defaultIfBlank(title, "Fetched headline");
+        String normalizedTitle = decodeHtmlEntities(rawTitle)
+                .replaceAll("\\s+", " ")
+                .trim();
         NewsEntity entity = new NewsEntity();
         entity.setId(UUID.randomUUID().toString().replace("-", ""));
         entity.setSource(source);
@@ -192,7 +201,7 @@ public class FetchServiceImpl implements FetchService {
         entity.setLang("en");
         entity.setCategory(classifyCategory(title, bodyRaw));
         entity.setUrl(url);
-        entity.setTitleRaw(title);
+        entity.setTitleRaw(rawTitle);
         entity.setBodyRaw(bodyRaw);
         entity.setPubUtc(pubUtc);
         entity.setFetchUtc(fetchedAt);
@@ -202,7 +211,7 @@ public class FetchServiceImpl implements FetchService {
         entity.setLicense(source.getLicensePolicy());
         entity.setRobots(true);
         entity.setTtl(clampRetentionSeconds(source.getCacheTtlSeconds()));
-        entity.setTitleKo(title);
+        entity.setTitleKo(normalizedTitle.isBlank() ? rawTitle : normalizedTitle);
         entity.setSummaryKo(summarize(bodyRaw));
         entity.setEvidenceSpans("[\"source:" + source.getSid() + "\",\"mode:live-fetch\"]");
         applyThumbnailMetadata(entity, bodyRaw, rssThumbnailUrl);
@@ -423,10 +432,32 @@ public class FetchServiceImpl implements FetchService {
     }
 
     private String stripTags(String text) {
-        return defaultIfBlank(text, "")
+        return decodeHtmlEntities(defaultIfBlank(text, ""))
                 .replaceAll("<[^>]+>", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
+    }
+
+    private String decodeHtmlEntities(String input) {
+        if (input == null || input.isBlank()) {
+            return "";
+        }
+        String decoded = input;
+        for (int i = 0; i < 2; i++) {
+            String next = decoded
+                    .replace("&nbsp;", " ")
+                    .replace("&#160;", " ")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&#39;", "'")
+                    .replace("&amp;", "&");
+            if (next.equals(decoded)) {
+                break;
+            }
+            decoded = next;
+        }
+        return decoded;
     }
 
     private String safeUrl(String candidate, String fallback) {

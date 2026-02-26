@@ -7,8 +7,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import com.wangbyul.gnd.api.config.SecurityConfig;
-import com.wangbyul.gnd.api.security.ApiKeyAuthenticationFilter;
+import com.wangbyul.gnd.api.GndApiApplication;
 import com.wangbyul.gnd.api.service.NewsLocalizationService;
 import com.wangbyul.gnd.core.domain.CategoryType;
 import com.wangbyul.gnd.core.domain.NewsEntity;
@@ -19,9 +18,9 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.context.annotation.Import;
+import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -32,11 +31,19 @@ import org.springframework.test.web.servlet.MockMvc;
  * 작성자 : 안태욱
  * 현재날짜 : 2026년 02월 20일
  */
-@WebMvcTest(controllers = NewsController.class)
-@Import({SecurityConfig.class, ApiKeyAuthenticationFilter.class})
+@SpringBootTest(classes = GndApiApplication.class)
+@AutoConfigureMockMvc
 @TestPropertySource(properties = {
+        "spring.datasource.url=jdbc:h2:mem:news-controller-regression;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
+        "spring.datasource.driver-class-name=org.h2.Driver",
+        "spring.datasource.username=sa",
+        "spring.datasource.password=",
+        "spring.jpa.hibernate.ddl-auto=create-drop",
+        "spring.flyway.enabled=false",
         "app.security.admin-api-key=test-admin-key",
-        "app.security.cors-allowlist=http://localhost:8081"
+        "app.security.cors-allowlist=http://localhost:8081",
+        "app.translation.ko.prefetch-enabled=false",
+        "app.signal.auto-generate-enabled=false"
 })
 @SuppressWarnings("removal")
 class NewsControllerRegressionTest {

@@ -175,7 +175,7 @@ async function loadAdvancedPanels(seq) {
   const lockController = createController();
   const backtestController = createController();
   try {
-    const [scalpRes, swingRes, discoveryRes, riskRes, lockRes, backtestRes] = await Promise.all([
+    const [scalpState, swingState, discoveryState, riskState, lockState, backtestState] = await Promise.allSettled([
       api.getScalpSignals({
         country: store.state.country,
         limit: 8
@@ -201,6 +201,20 @@ async function loadAdvancedPanels(seq) {
       return;
     }
 
+    const scalpRes = scalpState.status === "fulfilled" ? scalpState.value : null;
+    const swingRes = swingState.status === "fulfilled" ? swingState.value : null;
+    const discoveryRes = discoveryState.status === "fulfilled" ? discoveryState.value : null;
+    const riskRes = riskState.status === "fulfilled" ? riskState.value : null;
+    const lockRes = lockState.status === "fulfilled" ? lockState.value : null;
+    const backtestRes = backtestState.status === "fulfilled" ? backtestState.value : null;
+
+    const panelErrors = {
+      scalp: scalpState.status === "rejected" ? scalpState.reason : null,
+      swing: swingState.status === "rejected" ? swingState.reason : null,
+      discovery: discoveryState.status === "rejected" ? discoveryState.reason : null,
+      position: null
+    };
+
     const scalpRows = Array.isArray(scalpRes?.data) ? scalpRes.data : [];
     const swingRows = Array.isArray(swingRes?.data) ? swingRes.data : [];
     const discoveryRows = Array.isArray(discoveryRes?.data) ? discoveryRes.data : [];
@@ -220,10 +234,18 @@ async function loadAdvancedPanels(seq) {
       const positionController = createController();
       try {
         positionRes = await api.getPositionSignal(positionAssetCode, { signal: positionController.signal });
+      } catch (err) {
+        if (!isAbortError(err)) {
+          panelErrors.position = err;
+        }
       } finally {
         removeController(positionController);
       }
     }
+
+    const traces = [scalpRes?.trace_id, swingRes?.trace_id, discoveryRes?.trace_id, positionRes?.trace_id]
+      .filter((v) => typeof v === "string" && v.trim().length > 0);
+    const hasPanelFailure = Boolean(panelErrors.scalp || panelErrors.swing || panelErrors.discovery || panelErrors.position);
 
     store.set({
       signalPanels: {
@@ -235,8 +257,9 @@ async function loadAdvancedPanels(seq) {
       riskPanel: riskRes?.data || null,
       lockPanel: lockRes?.data || [],
       backtestReport: backtestRes?.data || null,
-      analysisTraceId: scalpRes?.trace_id || swingRes?.trace_id || discoveryRes?.trace_id || "",
-      analysisError: null
+      analysisTraceId: traces[0] || "",
+      analysisError: hasPanelFailure ? panelErrors : null,
+      analysisPanelErrors: panelErrors
     });
     ui.renderAnalysisPanels(store.state);
     ui.renderRiskPanel(store.state.riskPanel, store.state.lockPanel, store.state.backtestReport);
@@ -244,8 +267,16 @@ async function loadAdvancedPanels(seq) {
     if (isAbortError(err) || seq !== requestSeq) {
       return;
     }
-    store.set({ analysisError: err });
-    $("#analysis-meta").text(`분석 오류: ${err?.message || err?.code || "요청 실패"}`);
+    store.set({
+      analysisError: err,
+      analysisPanelErrors: {
+        scalp: err,
+        swing: err,
+        discovery: err,
+        position: err
+      }
+    });
+    ui.renderAnalysisError(err);
   }
 }
 

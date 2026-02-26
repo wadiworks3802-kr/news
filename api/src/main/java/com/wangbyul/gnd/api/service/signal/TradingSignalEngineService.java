@@ -100,6 +100,9 @@ public class TradingSignalEngineService {
     @Value("${app.universe.panel-max-exposure-per-24h:3}")
     private int panelMaxExposurePer24h;
 
+    @Value("${app.universe.panel-exposure-write-enabled:false}")
+    private boolean panelExposureWriteEnabled;
+
     @Value("${app.universe.priority-themes:RESOURCE,DEFENSE,SPACE,AI,SEMICONDUCTOR,ROBOTICS,ENERGY}")
     private List<String> priorityThemes;
 
@@ -391,15 +394,25 @@ public class TradingSignalEngineService {
 
     private void ensureRecentSignals(String country, String theme, int limit, StrategyRunType runType) {
         String signalWindow = resolveSignalWindow(runType);
-        List<TradingSignalEntity> existing = tradingSignalRepository.findByCountryAndGeneratedAtAfterOrderByGeneratedAtDesc(
+        List<TradingSignalEntity> existing = tradingSignalRepository.findByCountryAndSignalWindowAndGeneratedAtAfterOrderByGeneratedAtDesc(
                 country,
+                signalWindow,
                 OffsetDateTime.now().minusMinutes(20),
-                PageRequest.of(0, 10));
+                PageRequest.of(0, 50));
         boolean exists = existing.stream()
-                .filter(signal -> Objects.equals(signalWindow, signal.getSignalWindow()))
                 .anyMatch(signal -> theme == null || theme.isBlank() || matchesThemeFilter(theme, signal, null));
         if (!exists) {
-            generateSignals(country, theme, limit, runType);
+            try {
+                generateSignals(country, theme, limit, runType);
+            } catch (RuntimeException e) {
+                log.warn(
+                        "ensureRecentSignals generation skipped runType={} country={} theme={} reason={} trace_id={}",
+                        runType == null ? "UNKNOWN" : runType.name(),
+                        safeString(country, "ALL"),
+                        safeString(theme, "ALL"),
+                        e.getMessage(),
+                        traceId());
+            }
         }
     }
 
@@ -603,7 +616,6 @@ public class TradingSignalEngineService {
                     if (asset == null) {
                         return null;
                     }
-                    normalizePanelExposureWindowState(asset, selectedAt);
                     if (!matchesThemeFilter(theme, signal, asset)) {
                         return null;
                     }
@@ -613,7 +625,7 @@ public class TradingSignalEngineService {
                     if (hasPanelExposureCooldown(asset, selectedAt)) {
                         return null;
                     }
-                    if (isPanelExposureLimitExceeded(asset)) {
+                    if (isPanelExposureLimitExceeded(asset, selectedAt)) {
                         return null;
                     }
                     return toPanelCandidate(panelType, signal, asset, normalizedTheme);
@@ -628,7 +640,6 @@ public class TradingSignalEngineService {
             if (asset == null) {
                 continue;
             }
-            normalizePanelExposureWindowState(asset, selectedAt);
             if (!matchesThemeFilter(theme, signal, asset)) {
                 themeFilteredCount++;
                 continue;
@@ -641,7 +652,7 @@ public class TradingSignalEngineService {
                 cooldownFilteredCount++;
                 continue;
             }
-            if (isPanelExposureLimitExceeded(asset)) {
+            if (isPanelExposureLimitExceeded(asset, selectedAt)) {
                 exposureCapFilteredCount++;
             }
         }
@@ -706,7 +717,7 @@ public class TradingSignalEngineService {
             return fallback;
         }
 
-        recordPanelExposure(selectedCandidates, selectedAt);
+        recordPanelExposureSafely(selectedCandidates, selectedAt, panelType, normalizedCountry, normalizedTheme);
         logPanelSelectionDuplicatesIfNeeded(
                 panelType,
                 normalizedCountry,
@@ -906,7 +917,7 @@ public class TradingSignalEngineService {
                 .themeCode(panelMeta == null ? null : panelMeta.themeCode())
                 .countryCode(asset == null ? null : safeString(asset.getCountryCode(), asset.getCountry()))
                 .strategyScope(asset == null ? null : safeString(asset.getStrategyScope(), "ALL"))
-                .panelExposureCount24h(asset == null ? null : (asset.getPanelExposureCount24h() == null ? 0 : asset.getPanelExposureCount24h()))
+                .panelExposureCount24h(asset == null ? null : effectivePanelExposureCount(asset, OffsetDateTime.now()))
                 .dupExposureCooldownMinutes(asset == null ? null : (asset.getDupExposureCooldownMinutes() == null ? 0 : asset.getDupExposureCooldownMinutes()))
                 .lastPanelExposedAt(asset == null ? null : asset.getLastPanelExposedAt())
                 .panelCooldownActive(asset == null ? null : hasPanelExposureCooldown(asset, OffsetDateTime.now()))
@@ -1291,17 +1302,16 @@ public class TradingSignalEngineService {
         };
     }
 
-    private void normalizePanelExposureWindowState(AssetUniverseEntity asset, OffsetDateTime now) {
+    private int effectivePanelExposureCount(AssetUniverseEntity asset, OffsetDateTime now) {
         if (asset == null) {
-            return;
+            return 0;
         }
-        if (asset.getPanelExposureCount24h() == null) {
-            asset.setPanelExposureCount24h(0);
-        }
+        int current = asset.getPanelExposureCount24h() == null ? 0 : Math.max(0, asset.getPanelExposureCount24h());
         OffsetDateTime last = asset.getLastPanelExposedAt();
         if (last != null && last.isBefore(now.minusHours(24))) {
-            asset.setPanelExposureCount24h(0);
+            return 0;
         }
+        return current;
     }
 
     private boolean hasPanelExposureCooldown(AssetUniverseEntity asset, OffsetDateTime now) {
@@ -1315,13 +1325,35 @@ public class TradingSignalEngineService {
         return asset.getLastPanelExposedAt().isAfter(now.minusMinutes(cooldownMinutes));
     }
 
-    private boolean isPanelExposureLimitExceeded(AssetUniverseEntity asset) {
+    private boolean isPanelExposureLimitExceeded(AssetUniverseEntity asset, OffsetDateTime now) {
         if (asset == null) {
             return false;
         }
         int limit = Math.max(1, panelMaxExposurePer24h);
-        int count = asset.getPanelExposureCount24h() == null ? 0 : Math.max(0, asset.getPanelExposureCount24h());
+        int count = effectivePanelExposureCount(asset, now);
         return count >= limit;
+    }
+
+    private void recordPanelExposureSafely(
+            List<PanelCandidate> selectedCandidates,
+            OffsetDateTime selectedAt,
+            PanelType panelType,
+            String country,
+            String theme) {
+        if (!panelExposureWriteEnabled || selectedCandidates == null || selectedCandidates.isEmpty()) {
+            return;
+        }
+        try {
+            recordPanelExposure(selectedCandidates, selectedAt);
+        } catch (RuntimeException e) {
+            log.warn(
+                    "panel exposure update skipped panel={} country={} theme={} reason={} trace_id={}",
+                    panelType == null ? "UNKNOWN" : panelType.name(),
+                    safeString(country, "ALL"),
+                    safeString(theme, "ALL"),
+                    e.getMessage(),
+                    traceId());
+        }
     }
 
     private void recordPanelExposure(List<PanelCandidate> selectedCandidates, OffsetDateTime selectedAt) {
@@ -1337,8 +1369,7 @@ public class TradingSignalEngineService {
             return;
         }
         for (AssetUniverseEntity asset : touched) {
-            normalizePanelExposureWindowState(asset, selectedAt);
-            int nextCount = (asset.getPanelExposureCount24h() == null ? 0 : asset.getPanelExposureCount24h()) + 1;
+            int nextCount = effectivePanelExposureCount(asset, selectedAt) + 1;
             asset.setPanelExposureCount24h(nextCount);
             asset.setLastPanelExposedAt(selectedAt);
         }
@@ -1428,6 +1459,9 @@ public class TradingSignalEngineService {
         }
         String normalizedTheme = normalizeThemeCode(theme);
         if (normalizedTheme == null || normalizedTheme.isBlank()) {
+            return true;
+        }
+        if ("ALL".equalsIgnoreCase(normalizedTheme) || "TOTAL".equalsIgnoreCase(normalizedTheme)) {
             return true;
         }
         if (signal != null && Objects.equals(normalizedTheme, normalizeThemeCode(signal.getTheme()))) {

@@ -70,6 +70,11 @@ public class AssistantDashboardService {
         List<TradingSignalViewDto> swing = tradingSignalEngineService.getSwingSignals(scopeCountry, scopeTheme, safeLimit);
         List<TradingSignalViewDto> discovery = tradingSignalEngineService.getDiscoverySignals(scopeCountry, scopeTheme, safeLimit);
         TradingSignalViewDto position = resolvePositionSignal(scalp, swing, discovery);
+        StrategyRows rows = rebalanceStrategyRows(scalp, swing, discovery, position, safeLimit);
+        scalp = rows.scalp();
+        swing = rows.swing();
+        discovery = rows.discovery();
+        position = rows.position();
 
         List<TradingSignalViewDto> mergedCandidates = mergeCandidates(scalp, swing, discovery, position);
         List<Map<String, Object>> watchlist = buildWatchlistCards(mergedCandidates);
@@ -94,6 +99,7 @@ public class AssistantDashboardService {
         data.put("strategy_order", STRATEGY_ORDER);
         data.put("status_bar", buildStatusBar(scopeCountry, scopeTheme, mergedCandidates, watchlist));
         data.put("strategies", buildStrategiesPayload(scalp, swing, discovery, position));
+        data.put("strategy_diversity", rows.summary());
         data.put("watchlist", watchlist);
         data.put("risk_panel", riskPanel);
         data.put("locks", locks);
@@ -231,6 +237,145 @@ public class AssistantDashboardService {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private StrategyRows rebalanceStrategyRows(
+            List<TradingSignalViewDto> scalp,
+            List<TradingSignalViewDto> swing,
+            List<TradingSignalViewDto> discovery,
+            TradingSignalViewDto position,
+            int maxPerStrategy) {
+        int perStrategyLimit = Math.max(1, Math.min(maxPerStrategy, 8));
+        Set<String> usedAssets = new LinkedHashSet<>();
+        int overlapReused = 0;
+
+        List<TradingSignalViewDto> scalpRows = pickUniqueRows(scalp, usedAssets, perStrategyLimit, true);
+        if (!scalpRows.isEmpty() && usedAssets.contains(safeString(scalpRows.get(0).getAssetCode()))) {
+            // no-op; 첫 전략은 항상 신규 등록
+        }
+        List<TradingSignalViewDto> swingRows = pickUniqueRows(swing, usedAssets, perStrategyLimit, true);
+        TradingSignalViewDto positionRow = resolvePositionRow(position, scalp, swing, discovery, usedAssets);
+        if (positionRow != null && isUsableSignalRow(positionRow)) {
+            if (!usedAssets.add(safeString(positionRow.getAssetCode()))) {
+                overlapReused++;
+            }
+        }
+        List<TradingSignalViewDto> discoveryRows = pickUniqueRows(discovery, usedAssets, perStrategyLimit, true);
+
+        if (scalpRows.isEmpty() && !scalp.isEmpty()) {
+            TradingSignalViewDto fallback = firstUsable(scalp);
+            if (fallback != null) {
+                scalpRows = List.of(fallback);
+                overlapReused++;
+            }
+        }
+        if (swingRows.isEmpty() && !swing.isEmpty()) {
+            TradingSignalViewDto fallback = firstUsable(swing);
+            if (fallback != null) {
+                swingRows = List.of(fallback);
+                overlapReused++;
+            }
+        }
+        if (discoveryRows.isEmpty() && !discovery.isEmpty()) {
+            TradingSignalViewDto fallback = firstUsable(discovery);
+            if (fallback != null) {
+                discoveryRows = List.of(fallback);
+                overlapReused++;
+            }
+        }
+
+        int uniqueAssetCount = (int) java.util.stream.Stream.concat(
+                        java.util.stream.Stream.concat(
+                                scalpRows.stream().map(TradingSignalViewDto::getAssetCode),
+                                swingRows.stream().map(TradingSignalViewDto::getAssetCode)),
+                        java.util.stream.Stream.concat(
+                                java.util.stream.Stream.of(positionRow).filter(Objects::nonNull).map(TradingSignalViewDto::getAssetCode),
+                                discoveryRows.stream().map(TradingSignalViewDto::getAssetCode)))
+                .filter(code -> code != null && !code.isBlank())
+                .distinct()
+                .count();
+        int totalRows = scalpRows.size() + swingRows.size() + discoveryRows.size() + (positionRow == null ? 0 : 1);
+
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("total_rows", totalRows);
+        summary.put("unique_asset_count", uniqueAssetCount);
+        summary.put("overlap_reused_count", overlapReused);
+        summary.put("scalp_count", scalpRows.size());
+        summary.put("swing_count", swingRows.size());
+        summary.put("chart_response_count", positionRow == null ? 0 : 1);
+        summary.put("discovery_count", discoveryRows.size());
+
+        return new StrategyRows(scalpRows, swingRows, discoveryRows, positionRow, summary);
+    }
+
+    private List<TradingSignalViewDto> pickUniqueRows(
+            List<TradingSignalViewDto> source,
+            Set<String> usedAssets,
+            int limit,
+            boolean registerUsed) {
+        if (source == null || source.isEmpty()) {
+            return List.of();
+        }
+        List<TradingSignalViewDto> selected = new ArrayList<>();
+        Set<String> localSeen = new LinkedHashSet<>();
+        for (TradingSignalViewDto row : source) {
+            if (!isUsableSignalRow(row)) {
+                continue;
+            }
+            String assetCode = safeString(row.getAssetCode());
+            if (!localSeen.add(assetCode)) {
+                continue;
+            }
+            if (usedAssets.contains(assetCode)) {
+                continue;
+            }
+            selected.add(row);
+            if (registerUsed) {
+                usedAssets.add(assetCode);
+            }
+            if (selected.size() >= limit) {
+                break;
+            }
+        }
+        return selected;
+    }
+
+    private TradingSignalViewDto resolvePositionRow(
+            TradingSignalViewDto preferred,
+            List<TradingSignalViewDto> scalp,
+            List<TradingSignalViewDto> swing,
+            List<TradingSignalViewDto> discovery,
+            Set<String> usedAssets) {
+        if (isUsableSignalRow(preferred) && !usedAssets.contains(safeString(preferred.getAssetCode()))) {
+            return preferred;
+        }
+        for (TradingSignalViewDto row : swing) {
+            if (isUsableSignalRow(row) && !usedAssets.contains(safeString(row.getAssetCode()))) {
+                return row;
+            }
+        }
+        for (TradingSignalViewDto row : scalp) {
+            if (isUsableSignalRow(row) && !usedAssets.contains(safeString(row.getAssetCode()))) {
+                return row;
+            }
+        }
+        for (TradingSignalViewDto row : discovery) {
+            if (isUsableSignalRow(row) && !usedAssets.contains(safeString(row.getAssetCode()))) {
+                return row;
+            }
+        }
+        return isUsableSignalRow(preferred) ? preferred : null;
+    }
+
+    private TradingSignalViewDto firstUsable(List<TradingSignalViewDto> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        return rows.stream().filter(this::isUsableSignalRow).findFirst().orElse(null);
+    }
+
+    private boolean isUsableSignalRow(TradingSignalViewDto row) {
+        return row != null && row.getAssetCode() != null && !row.getAssetCode().isBlank();
     }
 
     private String firstPreferredAssetCode(
@@ -898,5 +1043,13 @@ public class AssistantDashboardService {
 
     private String stringValue(Object value) {
         return value == null ? "" : String.valueOf(value);
+    }
+
+    private record StrategyRows(
+            List<TradingSignalViewDto> scalp,
+            List<TradingSignalViewDto> swing,
+            List<TradingSignalViewDto> discovery,
+            TradingSignalViewDto position,
+            Map<String, Object> summary) {
     }
 }

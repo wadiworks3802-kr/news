@@ -45,6 +45,7 @@ import org.springframework.test.web.servlet.MockMvc;
         "app.signal.auto-generate-enabled=false",
         "app.market.provider.active=mock",
         "app.market.provider.fallback-to-mock-on-failure=true",
+        "app.market.provider.allow-mock=true",
         "app.market.collection.quote-asset-limit=5",
         "app.market.collection.bar-asset-limit=5",
         "app.market.collection.bar-points-per-asset=2",
@@ -86,6 +87,7 @@ class MarketCollectionDiagnosticsIntegrationTest {
         seedAssets();
         marketProviderProperties.setFallbackToMockOnFailure(true);
         marketProviderProperties.setActive("mock");
+        marketProviderProperties.setAllowMock(true);
     }
 
     @Test

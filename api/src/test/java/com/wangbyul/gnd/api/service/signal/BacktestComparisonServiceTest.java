@@ -1,4 +1,4 @@
-﻿package com.wangbyul.gnd.api.service.signal;
+package com.wangbyul.gnd.api.service.signal;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wangbyul.gnd.api.config.BacktestPolicyProperties;

@@ -186,7 +186,7 @@ window.ui = {
   },
 
   renderError(err) {
-    const msg = err?.message || err?.code || "요청 실패";
+    const msg = this.friendlyErrorText(err, "요청 실패");
     $("#status").text(`오류: ${msg}`);
     $("#retry").removeClass("hide");
   },
@@ -301,11 +301,14 @@ window.ui = {
     const categoryCode = Array.isArray(item.category) && item.category.length ? item.category[0] : "";
     const categoryLabel = this.categoryLabel(categoryCode);
     const thumb = this.resolveThumbnail(item, categoryCode);
-    const title = this.escapeHtml(item.title_ko || "(제목 없음)");
-    const summary = this.escapeHtml(item.summary_ko || "(요약 없음)");
-    const source = this.escapeHtml(item.source || "N/A");
+    const titleText = this.toPlainText(item.title_ko || item.title_raw || "(제목 없음)");
+    const summaryText = this.toPlainText(item.summary_ko || "(요약 없음)");
+    const sourceText = this.toPlainText(item.source || "N/A");
+    const title = this.escapeHtml(titleText || "(제목 없음)");
+    const summary = this.escapeHtml(summaryText || "(요약 없음)");
+    const source = this.escapeHtml(sourceText || "N/A");
     const trustText = this.formatTrustScore(item.trust_score);
-    const thumbAlt = this.escapeHtml(`${source} 기사 썸네일`);
+    const thumbAlt = this.escapeHtml(`${sourceText || "N/A"} 기사 썸네일`);
     const safeThumb = this.escapeAttr(thumb.primaryUrl);
     const safeThumbFallback = this.escapeAttr(thumb.fallbackUrl);
     const safeSourceIcon = this.escapeAttr(thumb.sourceIconUrl || "");
@@ -512,9 +515,9 @@ window.ui = {
   },
 
   renderStockSignalsError(err) {
-    const msg = this.escapeHtml(err?.message || err?.code || "시그널 조회 실패");
+    const msg = this.friendlyErrorText(err, "시그널 조회 실패");
     $("#stock-meta").text("시그널 오류");
-    $("#stock-list").html(`<div class="empty-box">${msg}</div>`);
+    $("#stock-list").html(`<div class="empty-box">${this.escapeHtml(msg)}</div>`);
   },
 
   renderAnalysisPanels(state) {
@@ -522,16 +525,57 @@ window.ui = {
     const swing = Array.isArray(state.signalPanels?.swing) ? state.signalPanels.swing : [];
     const discovery = Array.isArray(state.signalPanels?.discovery) ? state.signalPanels.discovery : [];
     const position = state.signalPanels?.position;
-    $("#analysis-meta").text(`trace_id=${state.analysisTraceId || ""}`);
+    const errors = state.analysisPanelErrors || {};
+    const failed = Object.values(errors).filter(Boolean).length;
+    const total = 4;
+    const loaded = total - failed;
+    const meta = [];
+    if (state.analysisTraceId) {
+      meta.push(`trace_id=${state.analysisTraceId}`);
+    }
+    meta.push(`로드 ${loaded}/${total}`);
+    if (failed > 0) {
+      meta.push(`부분 오류 ${failed}`);
+    }
+    $("#analysis-meta").text(meta.join(" · "));
 
-    $("#panel-scalp").html(this.renderSignalItems(scalp, "단타 후보가 없습니다."));
-    $("#panel-swing").html(this.renderSignalItems(swing, "중기 후보가 없습니다."));
-    $("#panel-discovery").html(this.renderSignalItems(discovery, "발굴 후보가 없습니다."));
-    $("#panel-position").html(
-      position
-        ? this.renderSignalItems([position], "포지션 시그널 없음")
-        : '<div class="empty-box">포지션 시그널 없음</div>'
+    $("#panel-scalp").html(
+      errors.scalp
+        ? this.renderPanelError(errors.scalp, "단타 전략 데이터를 불러오지 못했습니다.")
+        : this.renderSignalItems(scalp, "단타 후보가 없습니다.")
     );
+    $("#panel-swing").html(
+      errors.swing
+        ? this.renderPanelError(errors.swing, "중기 전략 데이터를 불러오지 못했습니다.")
+        : this.renderSignalItems(swing, "중기 후보가 없습니다.")
+    );
+    $("#panel-discovery").html(
+      errors.discovery
+        ? this.renderPanelError(errors.discovery, "발굴 전략 데이터를 불러오지 못했습니다.")
+        : this.renderSignalItems(discovery, "발굴 후보가 없습니다.")
+    );
+    $("#panel-position").html(
+      errors.position
+        ? this.renderPanelError(errors.position, "차트 대응 데이터를 불러오지 못했습니다.")
+        : (position
+          ? this.renderSignalItems([position], "포지션 시그널 없음")
+          : '<div class="empty-box">포지션 시그널 없음</div>')
+    );
+  },
+
+  renderAnalysisError(err) {
+    const msg = this.friendlyErrorText(err, "전략 패널 조회 실패");
+    $("#analysis-meta").text("분석 오류");
+    const box = `<div class="empty-box">${this.escapeHtml(msg)}</div>`;
+    $("#panel-scalp").html(box);
+    $("#panel-swing").html(box);
+    $("#panel-position").html(box);
+    $("#panel-discovery").html(box);
+  },
+
+  renderPanelError(err, fallback) {
+    const msg = this.friendlyErrorText(err, fallback || "데이터 조회 실패");
+    return `<div class="empty-box panel-error-box">${this.escapeHtml(msg)}</div>`;
   },
 
   renderSignalItems(rows, emptyText) {
@@ -557,13 +601,18 @@ window.ui = {
       const blocked = this.escapeHtml(row.blocked_reason || "");
       const purpose = this.escapeHtml(row.panel_purpose || "");
       const strategyKey = this.escapeHtml(row.strategy_key || "");
+      const strategyRaw = String(row.strategy_key || "").toUpperCase();
       const stateBadge = this.escapeHtml(row.state_badge || "");
       const stateReason = this.escapeHtml(row.state_reason || "");
       const recommendationState = this.escapeHtml(row.recommendation_state || "");
       const primaryMetricLabel = this.escapeHtml(row.primary_metric_label || "핵심지표");
       const primaryMetricValue = Number(row.primary_metric_value ?? 0).toFixed(3);
+      const strategySummary = this.escapeHtml(row.strategy_evidence_summary || stateReason || "-");
       const dedupApplied = Boolean(row.dedup_applied);
       const qualityDegraded = Boolean(row.quality_degraded);
+      const actionRaw = String(row.action || "WATCH").toUpperCase();
+      const actionClass = this.signalActionClass(actionRaw);
+      const strategyClass = this.signalStrategyClass(strategyRaw);
       const badgeParts = [
         stateBadge ? `<span class="badge">${stateBadge}</span>` : "",
         recommendationState ? `<span class="badge">${recommendationState}</span>` : "",
@@ -573,21 +622,24 @@ window.ui = {
       ].filter(Boolean).join("");
       const probabilityText = isDataGap
         ? `뉴스확률 보류 (${this.escapeHtml(dataState)})`
-        : `${row.strategy_key === "SCALP" ? `호/악 ${good}/${bad}` : `주간 ${weekly}`}`;
+        : `${strategyRaw === "SCALP" ? `호/악 ${good}/${bad}` : `주간 ${weekly}`}`;
       return `
-        <article class="signal-item">
+        <article class="signal-item ${strategyClass}">
           <div class="signal-top">
-            <span class="signal-name">${name}</span>
-            <span class="signal-action">${action}</span>
+            <div class="signal-title-group">
+              <span class="signal-name">${name}</span>
+              <span class="signal-subtitle">${strategyKey || "STRATEGY"} · ${purpose || "-"}</span>
+            </div>
+            <span class="signal-action ${actionClass}">${action}</span>
           </div>
-          ${(purpose || strategyKey) ? `<div class="signal-metrics"><span>${strategyKey || "STRATEGY"}</span><span>${purpose || "-"}</span>${badgeParts}</div>` : ""}
+          <div class="signal-badges">${badgeParts || '<span class="badge">기본</span>'}</div>
           <div class="signal-metrics">
             <span>${primaryMetricLabel} ${primaryMetricValue}</span>
             <span>결합 ${combined}</span>
             <span>${probabilityText}</span>
             ${blocked ? `<span>차단 ${blocked}</span>` : ""}
           </div>
-          ${stateReason ? `<div class="signal-metrics"><span>${stateReason}</span></div>` : ""}
+          <div class="signal-summary">${strategySummary}</div>
           ${signalId ? `<button class="signal-open-btn" type="button" data-signal-id="${signalId}">상세 보기</button>` : ""}
         </article>
       `;
@@ -693,9 +745,9 @@ window.ui = {
   },
 
   renderAssistantError(err) {
-    const msg = this.escapeHtml(err?.message || err?.code || "AI 비서 대시보드 조회 실패");
+    const msg = this.friendlyErrorText(err, "AI 비서 대시보드 조회 실패");
     $("#assistant-meta").text(`오류: ${msg}`);
-    $("#assistant-status-bar").html(`<div class="empty-box">${msg}</div>`);
+    $("#assistant-status-bar").html(`<div class="empty-box">${this.escapeHtml(msg)}</div>`);
   },
 
   renderAssistantDashboard(state) {
@@ -717,6 +769,10 @@ window.ui = {
     const collectionStatus = statusBar.data_collection_status || {};
     const ragRuntime = statusBar.rag_runtime || {};
     const warnings = Array.isArray(statusBar.warnings) ? statusBar.warnings : [];
+    const diversity = dashboard.strategy_diversity || {};
+    const uniqueAssetCount = Number(diversity.unique_asset_count || 0);
+    const strategyRowCount = Number(diversity.total_rows || 0);
+    const overlapReusedCount = Number(diversity.overlap_reused_count || 0);
 
     $("#assistant-meta").text(
       `${this.countryLabel(dashboard.country || state.country)} · trace_id=${state.assistantTraceId || ""} · ${new Date().toLocaleString()}`
@@ -730,9 +786,16 @@ window.ui = {
         : '<div class="empty-box">추천/관심 종목이 없습니다. 데이터 수집 상태 또는 토글 설정을 확인하세요.</div>'
     );
 
-    $("#assistant-strategy-meta").text(
+    const strategyMetaParts = [
       `${this.escapeHtml(store.strategyLabels?.[selectedStrategy] || selectedStrategy)} · ${selectedRows.length}개`
-    );
+    ];
+    if (strategyRowCount > 0) {
+      strategyMetaParts.push(`전략자산 ${uniqueAssetCount}/${strategyRowCount}`);
+    }
+    if (overlapReusedCount > 0) {
+      strategyMetaParts.push(`중복재사용 ${overlapReusedCount}건`);
+    }
+    $("#assistant-strategy-meta").text(strategyMetaParts.join(" · "));
     $("#assistant-strategy-tabs").html(
       strategyOrder.map((key) => {
         const strategy = strategies[key] || {};
@@ -847,11 +910,16 @@ window.ui = {
     } catch (e) {
       breakdown = {};
     }
+    const strategyRaw = String(row.strategy_key || "").toUpperCase();
     const dataState = this.escapeHtml(String(breakdown.data_state || ""));
     const primaryMetricValue = Number(row.primary_metric_value ?? 0).toFixed(3);
-    const metricLine = row.strategy_key === "SCALP"
-      ? `호/악 ${Number(row.good_news_probability ?? 0).toFixed(3)} / ${Number(row.bad_news_probability ?? 0).toFixed(3)}`
-      : `결합 ${Number(row.combined_confidence ?? 0).toFixed(3)} · 주간 ${Number(row.weekly_context_score ?? 0).toFixed(3)}`;
+    const metricLine = strategyRaw === "SCALP"
+      ? `호/악 ${Number(row.good_news_probability ?? 0).toFixed(3)} / ${Number(row.bad_news_probability ?? 0).toFixed(3)} · 뉴스신뢰 ${Number(row.news_confidence ?? 0).toFixed(3)}`
+      : strategyRaw === "SWING"
+        ? `스윙 ${Number(row.swing_signal_score ?? 0).toFixed(3)} · 주간 ${Number(row.weekly_context_score ?? 0).toFixed(3)} · 결합 ${Number(row.combined_confidence ?? 0).toFixed(3)}`
+        : strategyRaw === "CHART_RESPONSE"
+          ? `포지션 ${Number(row.position_management_signal ?? 0).toFixed(3)} · 차트신뢰 ${Number(row.chart_confidence ?? 0).toFixed(3)} · 결합 ${Number(row.combined_confidence ?? 0).toFixed(3)}`
+          : `발굴 ${Number(row.discovery_score ?? 0).toFixed(3)} · 결합 ${Number(row.combined_confidence ?? 0).toFixed(3)} · 주간 ${Number(row.weekly_context_score ?? 0).toFixed(3)}`;
     const guideLine = row.strategy_key === "CHART_RESPONSE"
       ? `평단가 ${Boolean(riskGuide.avg_down_allowed) ? "허용" : "보류"} · 단계 ${Number(riskGuide.avg_down_stage || 0)} · 다음비중 ${Number(riskGuide.avg_down_next_buy_ratio || 0).toFixed(3)}`
       : (Boolean(riskGuide.buy_lock_active) ? "BUY_LOCK 활성(재분석 전 매수 금지)" : "");
@@ -1569,10 +1637,73 @@ window.ui = {
   },
 
   toPlainText(value) {
-    return String(value || "")
+    return this.decodeHtmlEntities(String(value || ""))
+      .replaceAll(/\u00a0/g, " ")
       .replaceAll(/<[^>]+>/g, " ")
       .replaceAll(/\s+/g, " ")
       .trim();
+  },
+
+  decodeHtmlEntities(value) {
+    let decoded = String(value || "");
+    for (let i = 0; i < 2; i += 1) {
+      const next = decoded
+        .replaceAll("&nbsp;", " ")
+        .replaceAll("&#160;", " ")
+        .replaceAll("&lt;", "<")
+        .replaceAll("&gt;", ">")
+        .replaceAll("&quot;", "\"")
+        .replaceAll("&#39;", "'")
+        .replaceAll("&amp;", "&");
+      if (next === decoded) {
+        break;
+      }
+      decoded = next;
+    }
+    return decoded;
+  },
+
+  friendlyErrorText(err, fallback) {
+    const code = String(err?.code || "").toUpperCase();
+    if (code === "SCHEMA_MISMATCH") {
+      return "데이터 스키마 불일치로 분석을 완료하지 못했습니다. 관리자 점검이 필요합니다.";
+    }
+    const raw = this.toPlainText(err?.message || err?.code || fallback || "요청 실패");
+    if (!raw) {
+      return fallback || "요청 실패";
+    }
+    return raw.length > 180 ? `${raw.slice(0, 180)}...` : raw;
+  },
+
+  signalActionClass(action) {
+    const key = String(action || "").toUpperCase();
+    if (key === "BUY_CANDIDATE") {
+      return "signal-action-buy";
+    }
+    if (key === "SELL_CANDIDATE") {
+      return "signal-action-sell";
+    }
+    if (key === "BUY_LOCK") {
+      return "signal-action-lock";
+    }
+    return "signal-action-watch";
+  },
+
+  signalStrategyClass(strategyKey) {
+    const key = String(strategyKey || "").toUpperCase();
+    if (key === "SCALP") {
+      return "signal-strategy-scalp";
+    }
+    if (key === "SWING") {
+      return "signal-strategy-swing";
+    }
+    if (key === "CHART_RESPONSE") {
+      return "signal-strategy-chart";
+    }
+    if (key === "DISCOVERY") {
+      return "signal-strategy-discovery";
+    }
+    return "signal-strategy-default";
   },
 
   isHttpUrl(url) {

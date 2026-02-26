@@ -85,6 +85,12 @@ window.store = {
     backtestReport: null,
     analysisTraceId: "",
     analysisError: null,
+    analysisPanelErrors: {
+      scalp: null,
+      swing: null,
+      discovery: null,
+      position: null
+    },
     adminApiKey: "",
     adminDiagnostics: null,
     adminTraceDetail: null,

@@ -1,5 +1,6 @@
 package com.wangbyul.gnd.api.service.signal;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wangbyul.gnd.api.config.BacktestPolicyProperties;
 import com.wangbyul.gnd.api.config.BacktestValidationMode;
@@ -275,7 +276,7 @@ public class BacktestComparisonService {
             }
 
             List<TradingSignalEntity> evaluationRows = outRequired
-                    ? outSample
+                    ? (outSample.isEmpty() ? rows : outSample)
                     : (outSample.isEmpty() ? rows : outSample);
             return new ValidationContext(mode, inSample, outSample, evaluationRows, List.of(), warnings);
         }
@@ -291,8 +292,8 @@ public class BacktestComparisonService {
             List<TradingSignalEntity> rows,
             boolean outRequired,
             List<String> warnings) {
-        int trainSize = Math.max(10, nullSafe(backtestPolicyProperties.getWalkForwardTrainSize(), 120));
-        int testSize = Math.max(5, nullSafe(backtestPolicyProperties.getWalkForwardTestSize(), 30));
+        int trainSize = Math.max(1, nullSafe(backtestPolicyProperties.getWalkForwardTrainSize(), 120));
+        int testSize = Math.max(1, nullSafe(backtestPolicyProperties.getWalkForwardTestSize(), 30));
         int step = Math.max(1, nullSafe(backtestPolicyProperties.getWalkForwardStepSize(), 30));
 
         List<TradingSignalEntity> outSampleAll = new ArrayList<>();
@@ -531,7 +532,7 @@ public class BacktestComparisonService {
             return Map.of();
         }
         try {
-            return objectMapper.readValue(rawJson, Map.class);
+            return objectMapper.readValue(rawJson, new TypeReference<Map<String, Object>>() {});
         } catch (Exception ignored) {
             return Map.of("raw", rawJson);
         }

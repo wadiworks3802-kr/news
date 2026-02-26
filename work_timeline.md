@@ -259,3 +259,60 @@
 - [T250] 이중 인코딩 JSON 파싱 복구(5차): `TradingSignalEngineService.parseJsonMap()`를 보완해 `probability_reason_breakdown_json`이 문자열로 한 번 더 감싸진(double-encoded) DB 데이터를 재파싱하도록 수정하여 상세보기에서 `analysis_state`/`data_state`/`news_confidence` 누락 문제를 해결.
 - [T251] 테스트 보강(5차): `ScalpNewsSignalServiceTest`에서 데이터 부족 시 강제 50:50 반환 금지 검증(`insufficientSampleShouldReturnStateInsteadOfForcedFiftyFifty`) 및 `analysis_state` 기록 검증을 추가하고, 뉴스-종목 매핑 저장 검증을 `atLeastOnce()`로 안정화.
 - [T252] 로컬 검증/증거 수집(5차): `:api` 로컬 기동 후 `scalp/swing/discovery` 및 상세 API에서 `trace_id`, `provider_name(mock 경고)`, `analysis_state`, `data_state`, 근거 배열 분리 반환을 확인하고, H2(`.data/gnd`)의 `news_asset_link` 샘플(`link_confidence`, `link_method`, `event_type`, `impact_direction`, `trace_id`)과 50% 수렴 완화 전/후 비교 증거를 수집.
+- [T253] 마지막 검증 차수 착수: 회귀 점검 + 배포 전/후 검증 기준을 문서/진단/API/DB/로그 증거 중심으로 재정리하고 릴리즈 후보 검증 범위를 확정.
+- [T254] 회귀/진단 버그 수정: `AdminDiagnosticsService`의 `news-asset-mapping` 경로 500 원인을 `MappingQualityReportService`의 `Map.ofEntries(... null ...)` 사용으로 재현하고 null-safe 맵 구성으로 수정(`country/theme` null -> `ALL`).
+- [T255] 배포 전 검증 문서 보강: `docs/DeploymentVerificationChecklist.md`를 확장해 사전/사후 체크리스트, 필수 증거(health/진단/API/DB/log/toggle/commit/time)와 스모크 기준을 명시하고 `docs/ProductionRuntimeConfigSample.md`(민감값 제외 운영 설정 샘플)를 추가.
+- [T256] 로컬 배포 전 회귀 검증(bootRun): `health`, 뉴스/썸네일/시장진단/전략패널/상세/RAG 진단/유니버스 다양성/수동수집 API를 재검증하고, `mock_provider_warning`, `theme_selection_reflected`, `duplicate_asset_rows=0`, 상세 근거 필드 분리 반환을 증거로 수집.
+- [T257] 로컬 DB/배포 검증 증거 수집: H2 Shell로 provider/thumbnail/signal 분포를 조회하고, `bootRun(api/.data/gnd)`와 JAR 실행(`./.data/gnd`)의 DB 경로 차이로 스키마/데이터 드리프트가 발생할 수 있음을 재확인.
+- [T258] 실제 원격 배포 미수행 상태 확인: SSH 키 기반 접속 부재로 기존 "마지막 검증" 시점의 원격 배포는 실행 불가였고, 대체로 로컬 JAR 배포(API/WEB 부분 성공, BATCH 실패, 로컬 H2 enum 값 손상으로 전략 API 500)를 수행해 배포 불가 판정을 기록.
+- [T259] 릴리즈 후보 보강 커밋/푸시: `76b41c2`(`fix: stabilize mapping diagnostics and expand release checks`)를 `feature/ai-stock-assistant-rebuild`에 커밋하고 원격 브랜치로 푸시.
+- [T260] 사용자 제공 계정 기반 원격 재배포 재시도 착수: `plink/pscp`로 `192.168.30.39` 접속을 재검증하고 host key fingerprint(`SHA256:dfn2TN9ATEzSK0oNWIS35m58SntwognlUIBRMf7zTaA`)를 확인한 뒤 `was/root` 계정 로그인 성공을 확인.
+- [T261] 원격 배포 소스 준비/업로드(재시도): 로컬 dirty 작업트리와 분리하기 위해 `git archive`로 커밋 `76b41c2` 기준 clean zip(`.deploy/gnd-news-src-76b41c2.zip`)을 생성하고 `pscp`로 `/home/was/gnd-news-src.zip` 업로드.
+- [T262] 원격 배포 스크립트 1차 실패 원인 확인: `server-unpack-and-deploy.sh` 실행 시 zip 배포본에서 Linux script execute bit가 소실되어 `server-build-restart.sh: Permission denied`(exit 126) 발생을 확인.
+- [T263] 원격 배포 스크립트 복구/재실행: `/home/was/gnd-news/scripts/linux/*.sh`와 `gradlew`에 실행권한 복구 후 CRLF(`\r`)로 인한 Linux shell 파싱 오류를 재현하고, `sed -i 's/\\r$//'`로 LF 변환 후 `server-build-restart.sh` 재실행하여 `:api/:web/:batch bootJar` 빌드 성공 및 `gnd-h2/gnd-api/gnd-web/gnd-batch` 재기동 성공을 확인.
+- [T264] 원격 배포 후 API 재시작 루프 진단: `gnd-api`가 `asset_universe.panel_exposure_count_24h` 컬럼 누락으로 `LocalSeedService.seedIfNeeded()`에서 부팅 실패(자동 재시작)하는 것을 `journalctl`과 `ss`로 확인하고, 서버가 `SPRING_PROFILES_ACTIVE=local` + `flyway=false` 조합으로 운영 중이어서 스키마 드리프트가 재발함을 확인.
+- [T265] 운영 H2 보정 시도/한계 확인: H2 TCP(`9092`)로 `asset_universe` 컬럼 메타를 조회해 `panel_exposure_count_24h`만 누락된 것을 확인했으나, `ALTER TABLE asset_universe ADD COLUMN ...` 시 과거 Hibernate `*_COPY_*` 테이블/제약 메타 오염(`market_quote_snapshot_COPY_*`)으로 H2 내부 오류가 발생해 수동 컬럼 추가가 실패함을 기록.
+- [T266] 임시 복구 조치(서비스 가용성 우선): `/etc/systemd/system/gnd-api.service`에 `Environment=APP_SEED_ENABLED=false`를 추가해 `LocalSeedRunner`를 우회하고 `gnd-api` 기동을 복구(`8080` 리슨)한 뒤, `systemctl daemon-reload && restart gnd-api`로 적용.
+- [T267] 재배포 후 스모크/잔여 이슈 확인: `gnd-h2/gnd-api/gnd-web/gnd-batch` 모두 `active`, `web` 루트 200, 관리자 진단(`market-collection/summary`, `feature-toggles`, `thumbnails`, `signals/confidence-distribution`) 200, `health` 503(Redis 미기동), 반면 전략패널/유니버스/뉴스-종목 매핑 API는 여전히 `asset_universe.panel_exposure_count_24h` 누락으로 500 발생하여 DB 스키마 정합성 복구가 추가 필요함을 확인.
+
+## 2026-02-25
+- [T268] 화면 오류 원인 재분석: 전략/AI 비서 패널 오류를 재현해 `asset_universe.panel_exposure_count_24h` 컬럼 누락(SQL 500), 공통 예외에서 SQL 원문 노출, 프론트 헤더 메타 장문 출력으로 제목 레이아웃 붕괴가 동시 발생함을 확인.
+- [T269] 수정용 프롬프트 신설: `prompt_fix_2026-02-25.md`를 작성해 스키마 드리프트 완화, 오류 메시지 안전화, 프론트 오류 렌더 단문화, HTML 엔티티(`&nbsp;`) 정리 작업 기준을 문서화.
+- [T270] 백엔드 오류 응답 안전화: `GlobalExceptionHandler`에 `DataAccessException` 분기와 스키마 불일치 감지 로직을 추가해 `SCHEMA_MISMATCH`/`DATA_ACCESS_ERROR` 표준 코드와 사용자용 축약 메시지를 반환하고 상세 SQL은 서버 로그로만 남기도록 변경.
+- [T271] 스키마 자동 보정 러너 추가: `SchemaCompatibilityAutoHealRunner`를 신규 추가해 기동 시 `asset_universe`의 `country_code/strategy_scope/last_panel_exposed_at/panel_exposure_count_24h` 컬럼 누락 시 `ALTER TABLE ... IF NOT EXISTS` + backfill SQL을 시도하도록 구현(실패 시 경고 로그만 기록).
+- [T272] 프론트 오류/레이아웃 보정: `web/ui.js`, `web/app.js`, `web/style.css`를 수정해 전략패널/AI비서 오류를 짧은 문구로 표준화(`friendlyErrorText`), 분석패널 전용 오류 렌더(`renderAnalysisError`)를 추가하고 헤더 메타를 `ellipsis` 처리해 제목 세로 붕괴를 방지.
+- [T273] 뉴스 카드 엔티티 표시 개선: `web/ui.js`에 HTML 엔티티 decode 경로를 추가하고 카드 title/summary/source를 plain text 정규화 후 렌더하도록 변경, `FetchServiceImpl`/`NewsLocalizationService`에도 엔티티 decode를 보강해 신규 적재·현지화 데이터의 `&nbsp;` 노출을 완화.
+- [T274] 정적 빌드 검증 완료: `./gradlew.bat :core:compileJava :collector:compileJava :api:compileJava :web:processResources -x test --no-daemon` 실행 성공으로 이번 수정분 컴파일 정합성 확인.
+- [T275] 운영 서버 수정본 배포 착수: `pscp/plink`로 `192.168.30.39:/home/was/gnd-news`에 변경 파일(`GlobalExceptionHandler`, `NewsLocalizationService`, `SchemaCompatibilityAutoHealRunner`, `FetchServiceImpl`, `web ui/app/style`, `prompt_fix_2026-02-25.md`, `work_timeline.md`) 업로드.
+- [T276] 원격 빌드 성공: 서버에서 `./gradlew :api:bootJar :web:bootJar :batch:bootJar -x test --no-daemon` 실행 성공, JAR 타임스탬프 `2026-02-25 21:00(KST)` 갱신 확인.
+- [T277] 서비스 재기동 수행: `gnd-h2/gnd-api/gnd-web/gnd-batch` 재시작 실행(`systemctl restart ...`), `gnd-web(8081)` 응답 200 확인.
+- [T278] 배포 후 장애 확인: `gnd-api`가 `auto-restart` 루프에 진입했고 `8080` 미리스닝 상태를 재현; `journalctl`에서 H2 `42101`(예: `market_quote_snapshot ... already exists`) 후 `Unable to determine Dialect without JDBC metadata`로 부팅 실패 확인.
+- [T279] 복구 재시도/미해결 기록: `gnd-batch/gnd-api` 중지 후 `gnd-h2` 재시작 + `gnd-api` 단독 기동 재시도, `SPRING_JPA_HIBERNATE_DDL_AUTO=none` 오버라이드 추가 후 재시작 재시도했으나 동일 H2 메타 오류로 API 기동 실패 지속.
+- [T280] 현재 운영 상태 정리: `gnd-h2`/`gnd-web`/`gnd-batch`는 동작, `gnd-api`는 H2 메타 오류로 부팅 실패(재시작 루프)여서 로그 폭주 방지를 위해 `systemctl stop gnd-api`로 임시 중지; 이번 배포는 코드 반영/빌드 완료이지만 API 정상 기동 기준으로는 부분 실패 상태로 기록.
+- [T281] 서비스 복구 착수(연결거부 해소): 기존 손상 DB(`.data/gnd`)는 보존하고 API/BATCH systemd datasource URL을 신규 DB(`.data/gnd_fix_20260225`)로 전환하는 복구 전략을 적용.
+- [T282] 운영 서비스 파일 수정: `/etc/systemd/system/gnd-api.service`, `/etc/systemd/system/gnd-batch.service`의 `SPRING_DATASOURCE_URL`을 `gnd_fix_20260225`로 변경하고, API에 임시로 넣었던 `SPRING_JPA_HIBERNATE_DDL_AUTO=none` 오버라이드를 제거(로컬 기본 `ddl-auto=update` 복귀).
+- [T283] 재기동/안정화 확인: `systemctl daemon-reload && restart gnd-h2 gnd-api gnd-batch gnd-web` 수행 후 4개 서비스 모두 `active/running` 상태 확인, `gnd-api` 재시작 카운터(`NRestarts=14`)가 추가 증가 없이 안정화됨을 확인.
+- [T284] 포트/헬스 스모크 확인: 서버에서 `9092(H2)`, `8080(API)`, `8081(WEB)` 리슨 확인; `/actuator/health`는 Redis 미기동으로 `503 DOWN`이지만 API 포트 연결 거부 상태는 해소됨을 확인.
+- [T285] 기능 API 스모크 확인: 외부 호출 기준 `GET /api/news?...` 200, `GET /api/insight/signals/scalp?...` 200, `GET /api/insight/assistant/dashboard?...` 200 확인(신규 DB 기준 데이터는 비어 있어 응답 `data=[]/watchlist=0`).
+- [T286] 원인 결론/운영 상태 갱신: 브라우저 `ERR_CONNECTION_REFUSED`의 직접 원인은 `gnd-api` 부팅 실패(8080 미리스닝)였고, 신규 DB 전환으로 기동 정상화하여 연결거부를 해소.
+- [T287] 키파일/실데이터 전환 프롬프트 보강: `prompt_fix_2026-02-25.md`에 "키움 키파일 반영 + 1분 수집 + 실운영 배포 고정" 섹션을 추가하고 `KIWOOM_APPKEY_FILE/KIWOOM_SECRETKEY_FILE`, `allow-mock=false`, `fallback-to-mock-on-failure=false`, `LIVE_TRADE=false` 원칙을 명시.
+- [T288] Provider 감사 오염 수정: `DataQualityAuditService`에서 하드코딩 `MOCK` 기본값 의존을 제거하고 `MarketDataProviderRouter` 기반 active provider(`KIWOOM`)를 품질 스냅샷/갭 이벤트/API 감사 기본 provider로 기록하도록 보정.
+- [T289] 뉴스 수집 중복 적재 완화: `FetchServiceImpl`에 `url_norm` 선조회(`findByUrlNorm`)를 추가해 insert 전 중복을 조기 스킵하고, DB unique 충돌 로그 노이즈를 축소.
+- [T290] 운영 프로필 검증(코드 기준): `api/src/main/resources/application-ops.yml`, `batch/src/main/resources/application-ops.yml`에서 `provider.active=kiwoom`, `allow-mock=false`, `fallback-to-mock-on-failure=false`, `seed.enabled=false`, `news.source-bootstrap.enabled=true`를 확인.
+- [T291] 운영 배포 스모크 재확인: `192.168.30.39`에서 `gnd-h2/gnd-api/gnd-web/gnd-batch` 모두 `active`, `api/web actuator health=UP`, 관리자 진단 요약에서 `provider_name=KIWOOM`, `allow_mock=false`, `fallback_to_mock_on_failure=false`를 확인.
+- [T292] 실데이터/수집 상태 증거 확보: `/api/admin/sources` 10건 기본 RSS 소스(`allowFetch=true`) 확인, `provider-audit`에서 `kiwoom` 성공 레코드 지속 적재 확인, `/api/insight/stocks` 응답이 고정 3종목 fallback이 아닌 동적 결과로 반환됨을 확인.
+- [T293] 잔여 위험 기록: 수집/진단은 정상이나 `asset_universe` 동시 접근 구간에서 H2 lock timeout이 간헐적으로 발생할 가능성이 있어(고부하 시) DB 락/트랜잭션 범위 최적화 후속 작업 필요.
+
+## 2026-02-26
+- [T294] 6차 장애 재진단 착수: 전략 분석 패널 4개 동시 오류와 AI 비서 전략 수렴 문제를 재현하고, 원인이 `asset_universe` 경합(lock timeout) + 프론트 병렬 로딩 실패 전파(`Promise.all`) + 전략 중복 완화 부족임을 확인.
+- [T295] 수정 프롬프트 확장: `prompt_fix_2026-02-25.md`에 `전략패널 동시 오류 해소 + AI 비서 전략 분리 가독화` 섹션을 추가해 부분 실패 허용, 락 완화, 전략 다양성, 디자인 보강 기준을 명시.
+- [T296] 프론트 로더 안정화: `web/js/app.js`, `web/js/store.js`, `web/js/ui.js`에서 `loadAdvancedPanels`를 `Promise.allSettled`로 전환하고 패널별 오류 상태(`analysisPanelErrors`)를 분리해 일부 실패 시 성공 패널이 유지되도록 수정.
+- [T297] 전략 패널 경합 완화(백엔드): `TradingSignalEngineService`에서 패널 조회 시 `asset_universe` 쓰기 경로를 기본 비활성(`app.universe.panel-exposure-write-enabled=false`)로 두고, 노출 카운트 기록은 실패해도 API 실패로 전파하지 않도록 `recordPanelExposureSafely`로 완화.
+- [T298] 신호 보장/필터 정합 보강: `TradingSignalEngineService.ensureRecentSignals`를 윈도우별 조회 기반으로 정확화하고, `theme=ALL/TOTAL`을 필터 해제 의미로 처리하도록 `matchesThemeFilter`를 수정.
+- [T299] 자동 분석 편향 완화: `SignalEngineScheduler`를 `SCALP -> SWING -> DISCOVERY` 라운드로빈 생성으로 변경하고 전략별 자동생성 limit 설정(`app.signal.auto-generate-limit-*`)을 추가.
+- [T300] AI 비서 전략 분리 강화: `AssistantDashboardService`에 전략 간 unique 종목 우선 재배치 로직(`rebalanceStrategyRows`)을 추가하고 `strategy_diversity(total_rows/unique_asset_count/overlap_reused_count)` 메타를 응답에 포함.
+- [T301] 디자인/가독성 보강: `web/style.css`, `web/ui.js`에서 전략 카드 계층(전략 색상 라인, 액션 배지, 요약행, 에러 박스)을 개선하고 AI 비서 전략행의 전략별 지표 라인을 분기해 이해 가능성을 높임.
+- [T302] 운영 설정값 반영: `api/src/main/resources/application-ops.yml`에 `app.universe.panel-exposure-write-enabled=false`와 전략별 자동생성 limit 값을 추가.
+- [T303] 로컬 빌드 검증: `./gradlew.bat :api:compileJava :web:processResources -x test --no-daemon` 실행 성공으로 컴파일 정합성 확인.
+- [T304] 원격 반영/재기동 완료: `192.168.30.39`에 변경 파일 업로드 후 `./gradlew :api:bootJar :web:bootJar -x test --no-daemon` 빌드 성공, `gnd-api/gnd-web` 재시작 완료(`ActiveEnterTimestamp`: `2026-02-26 00:22:52/00:22:51 KST`).
+- [T305] 배포 후 스모크 확인: `8080/8081` health `UP`, 전략/비서 API 응답 200 확인, 최근 `journalctl`에서 이전 `JdbcSQLTimeoutException` 패턴 미재현(현재는 dedup 경고 중심) 상태를 확인.

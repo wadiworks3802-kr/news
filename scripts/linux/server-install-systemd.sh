@@ -10,6 +10,7 @@ PROJECT_DIR="${1:-/home/was/gnd-news}"
 SERVER_HOST="${2:-192.168.30.39}"
 SERVICE_DIR="/etc/systemd/system"
 H2_TCP_PORT="${3:-9092}"
+SPRING_PROFILE="${4:-ops}"
 
 cat <<EOF | sudo tee "${SERVICE_DIR}/gnd-h2.service" >/dev/null
 [Unit]
@@ -42,11 +43,19 @@ Requires=gnd-h2.service
 Type=simple
 User=was
 WorkingDirectory=${PROJECT_DIR}
-Environment=SPRING_PROFILES_ACTIVE=local
+Environment=SPRING_PROFILES_ACTIVE=${SPRING_PROFILE}
 Environment=JAVA_HOME=/usr/lib/jvm/java-21-openjdk
 Environment=APP_SECURITY_CORS_ALLOWLIST=http://localhost:8080,http://localhost:8081,http://127.0.0.1:8081,http://${SERVER_HOST}:8081,http://${SERVER_HOST}:8080
 Environment=SPRING_DATASOURCE_URL=jdbc:h2:tcp://127.0.0.1:${H2_TCP_PORT}//${PROJECT_DIR}/.data/gnd;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
 Environment=SPRING_DATASOURCE_USERNAME=sa
+Environment=SPRING_DATASOURCE_PASSWORD=
+Environment=APP_MARKET_PROVIDER_ACTIVE=kiwoom
+Environment=APP_MARKET_PROVIDER_ALLOW_MOCK=false
+Environment=APP_MARKET_PROVIDER_FALLBACK_TO_MOCK_ON_FAILURE=false
+Environment=APP_SEED_ENABLED=false
+Environment=APP_NEWS_SOURCE_BOOTSTRAP_ENABLED=true
+Environment=KIWOOM_APPKEY_FILE=${PROJECT_DIR}/appkey.txt
+Environment=KIWOOM_SECRETKEY_FILE=${PROJECT_DIR}/secretkey.txt
 ExecStart=/usr/bin/java -jar ${PROJECT_DIR}/api/build/libs/api-0.1.0-SNAPSHOT.jar --server.port=8080
 SuccessExitStatus=143
 Restart=always
@@ -89,10 +98,17 @@ Requires=gnd-h2.service
 Type=simple
 User=was
 WorkingDirectory=${PROJECT_DIR}
-Environment=SPRING_PROFILES_ACTIVE=local
+Environment=SPRING_PROFILES_ACTIVE=${SPRING_PROFILE}
 Environment=JAVA_HOME=/usr/lib/jvm/java-21-openjdk
 Environment=SPRING_DATASOURCE_URL=jdbc:h2:tcp://127.0.0.1:${H2_TCP_PORT}//${PROJECT_DIR}/.data/gnd;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
 Environment=SPRING_DATASOURCE_USERNAME=sa
+Environment=SPRING_DATASOURCE_PASSWORD=
+Environment=APP_MARKET_PROVIDER_ACTIVE=kiwoom
+Environment=APP_MARKET_PROVIDER_ALLOW_MOCK=false
+Environment=APP_MARKET_PROVIDER_FALLBACK_TO_MOCK_ON_FAILURE=false
+Environment=APP_NEWS_SOURCE_BOOTSTRAP_ENABLED=true
+Environment=KIWOOM_APPKEY_FILE=${PROJECT_DIR}/appkey.txt
+Environment=KIWOOM_SECRETKEY_FILE=${PROJECT_DIR}/secretkey.txt
 ExecStart=/usr/bin/java -jar ${PROJECT_DIR}/batch/build/libs/batch-0.1.0-SNAPSHOT.jar
 SuccessExitStatus=143
 Restart=always

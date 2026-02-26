@@ -1,0 +1,53 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: update
+  flyway:
+    enabled: false
+
+management:
+  health:
+    redis:
+      enabled: false
+
+app:
+  market:
+    provider:
+      active: kiwoom
+      allow-mock: false
+      fallback-to-mock-on-failure: false
+      universe-bootstrap:
+        enabled: true
+        force-update: false
+        max-assets: 200
+        core-count: 40
+      kiwoom:
+        base-url: https://api.kiwoom.com
+        token-path: /oauth2/token
+        quote-path: /api/dostk/stkinfo
+        chart-path: /api/dostk/chart
+        quote-api-id: ka10099
+        chart-api-id: ka10080
+        app-key-file: ${KIWOOM_APPKEY_FILE:appkey.txt}
+        secret-key-file: ${KIWOOM_SECRETKEY_FILE:secretkey.txt}
+        market-type: "0"
+        chart-interval-field: tic_scope
+        chart-adjusted-price-type: "1"
+        health-check-stock-code: 005930
+        request-timeout-millis: 8000
+        connect-timeout-millis: 3000
+  seed:
+    enabled: false
+  news:
+    source-bootstrap:
+      enabled: true
+      force-update: false
+      cache-ttl-seconds: 7200
+  universe:
+    panel-exposure-write-enabled: false
+  signal:
+    auto-generate-limit-scalp: 12
+    auto-generate-limit-swing: 18
+    auto-generate-limit-discovery: 16
+  trade:
+    live-enabled: false

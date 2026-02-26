@@ -224,7 +224,8 @@ public class UniverseRebuildService {
         } else if (country != null && !country.isBlank()) {
             filtered = assetUniverseRepository.findByCountryOrderBySelectionScoreDesc(country);
         } else {
-            filtered = assetUniverseRepository.findByActiveTrueOrderByUpdatedAtDesc();
+            // Repository implementation/test stubs may return immutable lists.
+            filtered = new ArrayList<>(assetUniverseRepository.findByActiveTrueOrderByUpdatedAtDesc());
             filtered.sort(Comparator.comparing(
                             AssetUniverseEntity::getSelectionScore,
                             Comparator.nullsLast(Comparator.reverseOrder()))
