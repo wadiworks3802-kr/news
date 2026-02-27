@@ -613,6 +613,10 @@ window.ui = {
       const actionRaw = String(row.action || "WATCH").toUpperCase();
       const actionClass = this.signalActionClass(actionRaw);
       const strategyClass = this.signalStrategyClass(strategyRaw);
+      const lastPrice = row.last_price == null ? null : Number(row.last_price);
+      const rawChangePct = row.change_pct == null ? null : Number(row.change_pct);
+      const changePct = rawChangePct == null ? null : (Math.abs(rawChangePct) <= 1 ? rawChangePct * 100 : rawChangePct);
+      const quoteProvider = this.escapeHtml(row.quote_provider || "");
       const badgeParts = [
         stateBadge ? `<span class="badge">${stateBadge}</span>` : "",
         recommendationState ? `<span class="badge">${recommendationState}</span>` : "",
@@ -637,6 +641,9 @@ window.ui = {
             <span>${primaryMetricLabel} ${primaryMetricValue}</span>
             <span>결합 ${combined}</span>
             <span>${probabilityText}</span>
+            ${lastPrice == null ? "" : `<span>시세 ${this.escapeHtml(lastPrice.toLocaleString())}</span>`}
+            ${changePct == null ? "" : `<span>등락 ${this.escapeHtml(changePct.toFixed(2))}%</span>`}
+            ${quoteProvider ? `<span>provider ${quoteProvider}</span>` : ""}
             ${blocked ? `<span>차단 ${blocked}</span>` : ""}
           </div>
           <div class="signal-summary">${strategySummary}</div>
@@ -850,7 +857,8 @@ window.ui = {
     const assetCode = this.escapeAttr(row.asset_code || "");
     const selected = signalId && signalId === String(selectedSignalId || "");
     const lastPrice = row.last_price == null ? "-" : Number(row.last_price).toLocaleString();
-    const changePct = row.change_pct == null ? null : Number(row.change_pct) * 100;
+    const rawChangePct = row.change_pct == null ? null : Number(row.change_pct);
+    const changePct = rawChangePct == null ? null : (Math.abs(rawChangePct) <= 1 ? rawChangePct * 100 : rawChangePct);
     const changeClass = changePct == null ? "" : (changePct > 0 ? "up" : (changePct < 0 ? "down" : "flat"));
     const volumeText = row.volume == null ? "-" : Number(row.volume).toLocaleString();
     const confidence = Number(row.combined_confidence ?? 0).toFixed(3);

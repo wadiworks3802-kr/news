@@ -39,10 +39,7 @@ public class PressureDetectionService {
         int volumeWindow = Math.max(window, signalPolicyProperties.getVolumeWindowBars());
         BigDecimal pressureThreshold = normalizeRate(signalPolicyProperties.getPressureDetectionThreshold(), BigDecimal.valueOf(0.70d));
 
-        List<MarketPriceBarEntity> bars = marketPriceBarRepository.findTop240ByAssetCodeAndTimeframeOrderByBarTimeDesc(assetCode, "H1");
-        if (bars.size() < window * 2) {
-            bars = marketPriceBarRepository.findTop240ByAssetCodeAndTimeframeOrderByBarTimeDesc(assetCode, "D1");
-        }
+        List<MarketPriceBarEntity> bars = resolveBars(assetCode, "H1", "1h", "D1", "d1", "1d", "1m");
 
         if (bars.size() < window * 2) {
             return new PressureDetectionResult(
@@ -161,5 +158,19 @@ public class PressureDetectionService {
         } catch (Exception ignored) {
             return "{}";
         }
+    }
+
+    private List<MarketPriceBarEntity> resolveBars(String assetCode, String... timeframes) {
+        for (String timeframe : timeframes) {
+            if (timeframe == null || timeframe.isBlank()) {
+                continue;
+            }
+            List<MarketPriceBarEntity> rows = marketPriceBarRepository
+                    .findTop240ByAssetCodeAndTimeframeOrderByBarTimeDesc(assetCode, timeframe);
+            if (rows != null && !rows.isEmpty()) {
+                return rows;
+            }
+        }
+        return List.of();
     }
 }

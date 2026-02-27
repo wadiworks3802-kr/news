@@ -25,13 +25,17 @@ app:
       active: mock
       allow-mock: true
       fallback-to-mock-on-failure: true
-      mock-bars-per-asset: 3
+      mock-bars-per-asset: 240
       mock-latency-ms: 25
     collection:
       quote-asset-limit: 60
       bar-asset-limit: 30
       bar-timeframe: 1m
-      bar-points-per-asset: 3
+      bar-timeframes: [1m, 1h, d1]
+      bar-points-per-asset: 240
+      bar-points-per-asset-1m: 240
+      bar-points-per-asset-h1: 240
+      bar-points-per-asset-d1: 365
   signal:
     news-windows-minutes: [10, 30, 60, 1440, 10080]
     ma-periods: [5, 20, 60, 120]

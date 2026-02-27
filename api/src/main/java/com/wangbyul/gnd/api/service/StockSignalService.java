@@ -2,11 +2,17 @@ package com.wangbyul.gnd.api.service;
 
 import com.wangbyul.gnd.api.dto.StockSignalDto;
 import com.wangbyul.gnd.core.domain.AssetUniverseEntity;
+import com.wangbyul.gnd.core.domain.MarketPriceBarEntity;
+import com.wangbyul.gnd.core.domain.MarketQuoteSnapshotEntity;
 import com.wangbyul.gnd.core.domain.NewsEntity;
 import com.wangbyul.gnd.core.domain.TickerAliasDictionaryEntity;
 import com.wangbyul.gnd.core.repository.AssetUniverseRepository;
+import com.wangbyul.gnd.core.repository.MarketPriceBarRepository;
+import com.wangbyul.gnd.core.repository.MarketQuoteSnapshotRepository;
 import com.wangbyul.gnd.core.repository.NewsRepository;
 import com.wangbyul.gnd.core.repository.TickerAliasDictionaryRepository;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -37,14 +43,20 @@ public class StockSignalService {
     private final NewsRepository newsRepository;
     private final AssetUniverseRepository assetUniverseRepository;
     private final TickerAliasDictionaryRepository tickerAliasDictionaryRepository;
+    private final MarketQuoteSnapshotRepository marketQuoteSnapshotRepository;
+    private final MarketPriceBarRepository marketPriceBarRepository;
 
     public StockSignalService(
             NewsRepository newsRepository,
             AssetUniverseRepository assetUniverseRepository,
-            TickerAliasDictionaryRepository tickerAliasDictionaryRepository) {
+            TickerAliasDictionaryRepository tickerAliasDictionaryRepository,
+            MarketQuoteSnapshotRepository marketQuoteSnapshotRepository,
+            MarketPriceBarRepository marketPriceBarRepository) {
         this.newsRepository = newsRepository;
         this.assetUniverseRepository = assetUniverseRepository;
         this.tickerAliasDictionaryRepository = tickerAliasDictionaryRepository;
+        this.marketQuoteSnapshotRepository = marketQuoteSnapshotRepository;
+        this.marketPriceBarRepository = marketPriceBarRepository;
     }
 
     public List<StockSignalDto> buildSignals(String country, String period, int limit) {
@@ -90,10 +102,29 @@ public class StockSignalService {
                 continue;
             }
 
-            int upProbability = computeUpProbability(relevance, sentiment);
+            MarketQuoteSnapshotEntity latestQuote = marketQuoteSnapshotRepository
+                    .findTop1ByAssetCodeOrderBySnapshotUtcDesc(asset.getAssetCode())
+                    .orElse(null);
+            List<MarketPriceBarEntity> bars = resolveHistoryBars(asset.getAssetCode());
+            BigDecimal quoteChangePct = latestQuote == null ? null : latestQuote.getChangePct();
+            BigDecimal return1dPct = returnPct(bars, 1);
+            BigDecimal return7dPct = returnPct(bars, 7);
+            BigDecimal effectiveChangePct = quoteChangePct != null ? quoteChangePct : return1dPct;
+
+            int upProbability = computeUpProbability(relevance, sentiment, effectiveChangePct, return1dPct, return7dPct);
             int downProbability = 100 - upProbability;
-            int confidence = (int) clamp(35 + relevance * 6 + Math.abs(sentiment) * 4 + matchedArticles * 2, 35, 95);
-            String reason = "연관 기사 " + matchedArticles + "건, 키워드 점수 " + relevance + ", 감성 점수 " + sentiment;
+            int confidence = (int) clamp(
+                    35 + relevance * 6 + Math.abs(sentiment) * 4 + matchedArticles * 2
+                            + (effectiveChangePct == null ? 0 : 5)
+                            + (return7dPct == null ? 0 : 6),
+                    35,
+                    95);
+            String reason = "연관기사 " + matchedArticles + "건"
+                    + " · 키워드 " + relevance
+                    + " · 감성 " + sentiment
+                    + " · 등락률 " + fmtPct(effectiveChangePct)
+                    + " · 1일수익률 " + fmtPct(return1dPct)
+                    + " · 7일수익률 " + fmtPct(return7dPct);
 
             signals.add(StockSignalDto.builder()
                     .stockCode(asset.getAssetCode())
@@ -201,9 +232,50 @@ public class StockSignalService {
         };
     }
 
-    private int computeUpProbability(int relevance, int sentiment) {
-        double raw = 50 + (relevance * 2.2) + (sentiment * 5.4);
+    private int computeUpProbability(
+            int relevance,
+            int sentiment,
+            BigDecimal quoteChangePct,
+            BigDecimal return1dPct,
+            BigDecimal return7dPct) {
+        double quoteEffect = quoteChangePct == null ? 0d : clamp(quoteChangePct.doubleValue() * 0.8d, -12, 12);
+        double return1dEffect = return1dPct == null ? 0d : clamp(return1dPct.doubleValue() * 0.45d, -10, 10);
+        double return7dEffect = return7dPct == null ? 0d : clamp(return7dPct.doubleValue() * 0.35d, -10, 10);
+        double raw = 50 + (relevance * 2.2) + (sentiment * 5.4) + quoteEffect + return1dEffect + return7dEffect;
         return (int) Math.round(clamp(raw, 5, 95));
+    }
+
+    private List<MarketPriceBarEntity> resolveHistoryBars(String assetCode) {
+        for (String timeframe : List.of("D1", "d1", "1d", "H1", "1h")) {
+            List<MarketPriceBarEntity> rows = marketPriceBarRepository
+                    .findTop240ByAssetCodeAndTimeframeOrderByBarTimeDesc(assetCode, timeframe);
+            if (rows != null && !rows.isEmpty()) {
+                return rows;
+            }
+        }
+        return List.of();
+    }
+
+    private BigDecimal returnPct(List<MarketPriceBarEntity> bars, int index) {
+        if (bars == null || bars.size() <= index || index < 1) {
+            return null;
+        }
+        BigDecimal latest = bars.get(0).getClosePrice();
+        BigDecimal previous = bars.get(index).getClosePrice();
+        if (latest == null || previous == null || previous.compareTo(BigDecimal.ZERO) == 0) {
+            return null;
+        }
+        return latest.subtract(previous)
+                .divide(previous, 6, RoundingMode.HALF_UP)
+                .multiply(BigDecimal.valueOf(100d))
+                .setScale(3, RoundingMode.HALF_UP);
+    }
+
+    private String fmtPct(BigDecimal value) {
+        if (value == null) {
+            return "N/A";
+        }
+        return value.setScale(3, RoundingMode.HALF_UP).toPlainString() + "%";
     }
 
     private int sentimentScore(String normalizedText) {

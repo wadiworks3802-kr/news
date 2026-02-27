@@ -28,7 +28,9 @@ public class ChartResponseStrategyService extends AbstractSignalPanelStrategySer
     public PanelStrategyEvaluation evaluate(TradingSignalEntity signal, AssetUniverseEntity asset) {
         BigDecimal score = clamp01(scale(signal.getPositionManagementSignal()));
         boolean blocked = isBlocked(signal);
-        boolean qualityDegraded = isTradeDisabled(asset) || isQuoteStale(asset);
+        boolean tradeDisabled = isTradeDisabled(asset);
+        boolean quoteStale = isQuoteStale(asset);
+        boolean qualityDegraded = tradeDisabled || quoteStale;
         Map<String, Object> pressure = parseJsonMap(signal.getPressureReasonJson());
         boolean volumeSame = boolField(pressure, "volume_regime_same");
         boolean sellDetected = boolField(pressure, "sell_pressure_detected");
@@ -36,25 +38,43 @@ public class ChartResponseStrategyService extends AbstractSignalPanelStrategySer
         boolean sellNegative = boolField(pressure, "sell_pressure_is_negative");
         boolean buyPositive = boolField(pressure, "buy_pressure_is_positive");
         boolean neutralized = volumeSame && (sellDetected || buyDetected) && !sellNegative && !buyPositive;
+        BigDecimal chart = scale(signal.getChartConfidence());
+        BigDecimal position = scale(signal.getPositionManagementSignal());
+        String avgDownState = Boolean.TRUE.equals(signal.getAvgDownAllowed())
+                ? ("허용(" + scale(signal.getAvgDownNextBuyRatio()) + ")")
+                : "보류";
 
         String badge;
         String reason;
         String recommendationState;
         if (blocked) {
             badge = "차단";
-            reason = "리스크 정책 차단";
+            reason = "차단사유=" + safeString(signal.getBlockedReason(), "RISK_POLICY")
+                    + " · 포지션 " + position
+                    + " · 차트신뢰 " + chart;
             recommendationState = "BLOCKED";
         } else if (neutralized) {
             badge = "압력중립";
-            reason = "연속 매수/매도 신호가 있으나 거래량 동일 구간으로 자동 단정 보류";
+            reason = "매수/매도 연속 신호 감지, 거래량 동일구간으로 자동 단정 보류"
+                    + " · 포지션 " + position
+                    + " · 차트신뢰 " + chart
+                    + " · 평단가 " + avgDownState
+                    + qualityHint(tradeDisabled, quoteStale);
             recommendationState = "WATCH_ONLY";
         } else if (signal.getAction() == SignalActionType.BUY_CANDIDATE || signal.getAction() == SignalActionType.SELL_CANDIDATE) {
             badge = qualityDegraded ? "품질주의" : "대응";
-            reason = "차트/압력/변동성 기반 대응 후보";
+            reason = "포지션 " + position + " · 차트신뢰 " + chart
+                    + " · 매도압력 " + sellDetected + "/" + sellNegative
+                    + " · 매수압력 " + buyDetected + "/" + buyPositive
+                    + " · 평단가 " + avgDownState
+                    + qualityHint(tradeDisabled, quoteStale);
             recommendationState = qualityDegraded ? "WARN" : "RECOMMEND";
         } else {
             badge = qualityDegraded ? "품질주의" : "관찰";
-            reason = "차트 대응 조건 대기";
+            reason = "포지션 " + position + " · 차트신뢰 " + chart
+                    + " · 평단가 " + avgDownState
+                    + " · 차트 대응 조건 대기"
+                    + qualityHint(tradeDisabled, quoteStale);
             recommendationState = qualityDegraded ? "WARN" : "WATCH_ONLY";
         }
 
@@ -70,6 +90,31 @@ public class ChartResponseStrategyService extends AbstractSignalPanelStrategySer
                 recommendationState,
                 qualityDegraded,
                 "position_signal>chart_confidence>pressure_reason");
+    }
+
+    private String qualityHint(boolean tradeDisabled, boolean quoteStale) {
+        if (!tradeDisabled && !quoteStale) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(" · 품질경고(");
+        if (tradeDisabled) {
+            sb.append("거래비활성");
+        }
+        if (tradeDisabled && quoteStale) {
+            sb.append(",");
+        }
+        if (quoteStale) {
+            sb.append("시세지연");
+        }
+        sb.append(")");
+        return sb.toString();
+    }
+
+    private String safeString(String value, String fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        return value.trim();
     }
 
     @Override

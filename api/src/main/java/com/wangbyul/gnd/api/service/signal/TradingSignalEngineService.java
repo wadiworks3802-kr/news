@@ -29,13 +29,18 @@ import com.wangbyul.gnd.core.domain.StrategyRunEntity;
 import com.wangbyul.gnd.core.domain.StrategyRunType;
 import com.wangbyul.gnd.core.domain.TradingSignalEntity;
 import com.wangbyul.gnd.core.domain.UniverseLayerType;
+import com.wangbyul.gnd.core.domain.MarketPriceBarEntity;
+import com.wangbyul.gnd.core.domain.MarketQuoteSnapshotEntity;
 import com.wangbyul.gnd.core.repository.AssetUniverseRepository;
+import com.wangbyul.gnd.core.repository.MarketPriceBarRepository;
+import com.wangbyul.gnd.core.repository.MarketQuoteSnapshotRepository;
 import com.wangbyul.gnd.core.repository.StrategyRunRepository;
 import com.wangbyul.gnd.core.repository.TradingSignalRepository;
 import java.math.MathContext;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -65,6 +70,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class TradingSignalEngineService {
 
     private final AssetUniverseRepository assetUniverseRepository;
+    private final MarketPriceBarRepository marketPriceBarRepository;
+    private final MarketQuoteSnapshotRepository marketQuoteSnapshotRepository;
     private final TradingSignalRepository tradingSignalRepository;
     private final StrategyRunRepository strategyRunRepository;
     private final ScalpNewsSignalService scalpNewsSignalService;
@@ -108,6 +115,8 @@ public class TradingSignalEngineService {
 
     public TradingSignalEngineService(
             AssetUniverseRepository assetUniverseRepository,
+            MarketPriceBarRepository marketPriceBarRepository,
+            MarketQuoteSnapshotRepository marketQuoteSnapshotRepository,
             TradingSignalRepository tradingSignalRepository,
             StrategyRunRepository strategyRunRepository,
             ScalpNewsSignalService scalpNewsSignalService,
@@ -131,6 +140,8 @@ public class TradingSignalEngineService {
             ChartResponseStrategyService chartResponseStrategyService,
             DiscoveryStrategyService discoveryStrategyService) {
         this.assetUniverseRepository = assetUniverseRepository;
+        this.marketPriceBarRepository = marketPriceBarRepository;
+        this.marketQuoteSnapshotRepository = marketQuoteSnapshotRepository;
         this.tradingSignalRepository = tradingSignalRepository;
         this.strategyRunRepository = strategyRunRepository;
         this.scalpNewsSignalService = scalpNewsSignalService;
@@ -228,7 +239,17 @@ public class TradingSignalEngineService {
     @Transactional
     public List<TradingSignalViewDto> getScalpSignals(String country, String theme, int limit) {
         ensureRecentSignals(country, theme, Math.max(limit, 20), StrategyRunType.SCALP);
-        return queryPanelSignals(country, theme, scalpStrategyService.allowedActions(), limit, PanelType.SCALP, scalpStrategyService.signalWindow());
+        List<TradingSignalViewDto> rows = queryPanelSignals(
+                country,
+                theme,
+                scalpStrategyService.allowedActions(),
+                limit,
+                PanelType.SCALP,
+                scalpStrategyService.signalWindow());
+        if (!rows.isEmpty()) {
+            return rows;
+        }
+        return fallbackScalpSignals(country, theme, limit);
     }
 
     @Transactional
@@ -740,6 +761,54 @@ public class TradingSignalEngineService {
                 .toList();
     }
 
+    private List<TradingSignalViewDto> fallbackScalpSignals(String country, String theme, int limit) {
+        int safeLimit = Math.max(1, limit);
+        String normalizedCountry = country == null ? "" : country.trim();
+        String normalizedTheme = normalizeThemeCode(theme);
+        List<TradingSignalEntity> recent = tradingSignalRepository.findByCountryAndGeneratedAtAfterOrderByGeneratedAtDesc(
+                normalizedCountry,
+                OffsetDateTime.now().minusHours(24),
+                PageRequest.of(0, Math.min(300, safeLimit * 20)));
+        if (recent.isEmpty()) {
+            return List.of();
+        }
+        Map<String, AssetUniverseEntity> assetMap = assetUniverseRepository
+                .findByCountryAndActiveTrueOrderByDisplayWeightDescSelectionScoreDescUpdatedAtDesc(normalizedCountry)
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(AssetUniverseEntity::getAssetCode, a -> a, (a, b) -> a));
+
+        Set<String> seenAssets = new HashSet<>();
+        List<TradingSignalViewDto> fallback = new ArrayList<>();
+        for (TradingSignalEntity signal : recent) {
+            if (signal == null || signal.getAssetCode() == null || signal.getAssetCode().isBlank()) {
+                continue;
+            }
+            if (!scalpStrategyService.allowedActions().contains(signal.getAction())) {
+                continue;
+            }
+            AssetUniverseEntity asset = assetMap.get(signal.getAssetCode());
+            if (asset == null || !matchesThemeFilter(theme, signal, asset)) {
+                continue;
+            }
+            if (!seenAssets.add(signal.getAssetCode())) {
+                continue;
+            }
+            fallback.add(toViewDto(signal, asset, PanelSelectionMeta.fallback(PanelType.SCALP, normalizedTheme)));
+            if (fallback.size() >= safeLimit) {
+                break;
+            }
+        }
+        if (!fallback.isEmpty()) {
+            log.warn(
+                    "scalp panel fallback applied country={} theme={} selected={} trace_id={}",
+                    normalizedCountry,
+                    safeString(normalizedTheme, "ALL"),
+                    fallback.size(),
+                    traceId());
+        }
+        return fallback;
+    }
+
     private PanelCandidate toPanelCandidate(
             PanelType panelType,
             TradingSignalEntity signal,
@@ -880,6 +949,10 @@ public class TradingSignalEngineService {
     private TradingSignalViewDto toViewDto(TradingSignalEntity signal, AssetUniverseEntity asset, PanelSelectionMeta panelMeta) {
         String assetName = asset != null && asset.getAssetName() != null ? asset.getAssetName()
                 : assetUniverseRepository.findById(signal.getAssetCode()).map(AssetUniverseEntity::getAssetName).orElse("-");
+        MarketQuoteSnapshotEntity quote = marketQuoteSnapshotRepository
+                .findTop1ByAssetCodeOrderBySnapshotUtcDesc(signal.getAssetCode())
+                .orElse(null);
+        QuoteViewState quoteView = resolveQuoteViewState(signal.getAssetCode(), quote);
         Map<String, Object> scalpBreakdown = parseJsonMap(signal.getProbabilityReasonBreakdownJson());
         Map<String, Object> reasonRoot = parseJsonMap(signal.getReasonJson());
         Map<String, Object> strategyEvidence = buildStrategyEvidence(signal, asset, panelMeta, reasonRoot, scalpBreakdown);
@@ -934,8 +1007,69 @@ public class TradingSignalEngineService {
                 .recommendationState(panelMeta == null ? null : panelMeta.recommendationState())
                 .qualityDegraded(panelMeta == null ? null : panelMeta.qualityDegraded())
                 .sortBasis(panelMeta == null ? null : panelMeta.sortBasis())
+                .lastPrice(quoteView.lastPrice())
+                .changePct(quoteView.changePct())
+                .volume(quoteView.volume())
+                .quoteTimeUtc(quoteView.quoteTimeUtc())
+                .quoteAgeSeconds(quoteView.quoteAgeSeconds())
+                .quoteProvider(quoteView.quoteProvider())
                 .generatedAt(signal.getGeneratedAt())
                 .build();
+    }
+
+    private QuoteViewState resolveQuoteViewState(String assetCode, MarketQuoteSnapshotEntity quote) {
+        OffsetDateTime quoteTime = quote == null
+                ? null
+                : (quote.getQuoteTimeUtc() != null ? quote.getQuoteTimeUtc() : quote.getSnapshotUtc());
+        BigDecimal lastPrice = quote == null ? null : scale(quote.getLastPrice());
+        BigDecimal changePct = quote == null ? null : scale(quote.getChangePct());
+        BigDecimal volume = quote == null ? null : scale(quote.getVolume());
+        String provider = quote == null ? null : quote.getProviderName();
+
+        List<MarketPriceBarEntity> dailyBars = marketPriceBarRepository
+                .findTop2ByAssetCodeAndTimeframeOrderByBarTimeDesc(assetCode, "D1");
+        if (dailyBars == null || dailyBars.isEmpty()) {
+            dailyBars = marketPriceBarRepository.findTop2ByAssetCodeAndTimeframeOrderByBarTimeDesc(assetCode, "d1");
+        }
+        if (dailyBars == null) {
+            dailyBars = List.of();
+        }
+
+        MarketPriceBarEntity latestBar = dailyBars.isEmpty() ? null : dailyBars.get(0);
+        if ((lastPrice == null || lastPrice.compareTo(BigDecimal.ZERO) <= 0)
+                && latestBar != null && latestBar.getClosePrice() != null) {
+            lastPrice = scale(latestBar.getClosePrice());
+        }
+        if ((volume == null || volume.compareTo(BigDecimal.ZERO) <= 0)
+                && latestBar != null && latestBar.getVolume() != null) {
+            volume = scale(latestBar.getVolume());
+        }
+        if (changePct == null || changePct.compareTo(BigDecimal.ZERO) == 0) {
+            changePct = fallbackChangePct(dailyBars);
+        }
+        if (quoteTime == null && latestBar != null) {
+            quoteTime = latestBar.getBarTimeUtc() != null ? latestBar.getBarTimeUtc() : latestBar.getBarTime();
+        }
+        if (isBlank(provider) && latestBar != null) {
+            provider = latestBar.getProviderName();
+        }
+        Long quoteAgeSeconds = quoteTime == null ? null : Math.max(0L, ChronoUnit.SECONDS.between(quoteTime, OffsetDateTime.now()));
+        return new QuoteViewState(lastPrice, changePct, volume, quoteTime, quoteAgeSeconds, provider);
+    }
+
+    private BigDecimal fallbackChangePct(List<MarketPriceBarEntity> dailyBars) {
+        if (dailyBars == null || dailyBars.size() < 2) {
+            return null;
+        }
+        BigDecimal latest = dailyBars.get(0).getClosePrice();
+        BigDecimal previous = dailyBars.get(1).getClosePrice();
+        if (latest == null || previous == null || previous.compareTo(BigDecimal.ZERO) <= 0) {
+            return null;
+        }
+        return latest.subtract(previous)
+                .divide(previous, MathContext.DECIMAL64)
+                .multiply(BigDecimal.valueOf(100))
+                .setScale(4, RoundingMode.HALF_UP);
     }
 
     private Map<String, Object> buildStrategyEvidence(
@@ -1083,6 +1217,9 @@ public class TradingSignalEngineService {
         }
         if (asset != null && !Boolean.TRUE.equals(asset.getIsTradeEnabled())) {
             tags.add("TRADE_DISABLED");
+        }
+        if (panelMeta != null && !isBlank(panelMeta.stateReason())) {
+            summary = summary + " · " + panelMeta.stateReason();
         }
         evidence.put("tags", tags.stream().distinct().toList());
         evidence.put("summary", summary);
@@ -1900,6 +2037,15 @@ public class TradingSignalEngineService {
         SWING,
         POSITION,
         DISCOVERY
+    }
+
+    private record QuoteViewState(
+            BigDecimal lastPrice,
+            BigDecimal changePct,
+            BigDecimal volume,
+            OffsetDateTime quoteTimeUtc,
+            Long quoteAgeSeconds,
+            String quoteProvider) {
     }
 
     private record PanelCandidate(

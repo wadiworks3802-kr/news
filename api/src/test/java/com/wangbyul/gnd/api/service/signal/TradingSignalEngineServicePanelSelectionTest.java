@@ -2,6 +2,7 @@ package com.wangbyul.gnd.api.service.signal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
@@ -20,11 +21,14 @@ import com.wangbyul.gnd.core.domain.SignalActionType;
 import com.wangbyul.gnd.core.domain.TradingSignalEntity;
 import com.wangbyul.gnd.core.domain.UniverseLayerType;
 import com.wangbyul.gnd.core.repository.AssetUniverseRepository;
+import com.wangbyul.gnd.core.repository.MarketPriceBarRepository;
+import com.wangbyul.gnd.core.repository.MarketQuoteSnapshotRepository;
 import com.wangbyul.gnd.core.repository.StrategyRunRepository;
 import com.wangbyul.gnd.core.repository.TradingSignalRepository;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -45,6 +49,10 @@ class TradingSignalEngineServicePanelSelectionTest {
     private AssetUniverseRepository assetUniverseRepository;
     @Mock
     private TradingSignalRepository tradingSignalRepository;
+    @Mock
+    private MarketPriceBarRepository marketPriceBarRepository;
+    @Mock
+    private MarketQuoteSnapshotRepository marketQuoteSnapshotRepository;
     @Mock
     private StrategyRunRepository strategyRunRepository;
     @Mock
@@ -81,6 +89,8 @@ class TradingSignalEngineServicePanelSelectionTest {
         ObjectMapper objectMapper = new ObjectMapper();
         TradingSignalEngineService service = new TradingSignalEngineService(
                 assetUniverseRepository,
+                marketPriceBarRepository,
+                marketQuoteSnapshotRepository,
                 tradingSignalRepository,
                 strategyRunRepository,
                 scalpNewsSignalService,
@@ -125,6 +135,10 @@ class TradingSignalEngineServicePanelSelectionTest {
                         .thenReturn(rows);
         when(assetUniverseRepository.findByCountryAndActiveTrueOrderByDisplayWeightDescSelectionScoreDescUpdatedAtDesc("KR"))
                 .thenReturn(assets);
+        when(marketPriceBarRepository.findTop2ByAssetCodeAndTimeframeOrderByBarTimeDesc(anyString(), anyString()))
+                .thenReturn(List.of());
+        when(marketQuoteSnapshotRepository.findTop1ByAssetCodeOrderBySnapshotUtcDesc(anyString()))
+                .thenReturn(Optional.empty());
 
         List<TradingSignalViewDto> result = service.getScalpSignals("KR", "AI", 2);
 

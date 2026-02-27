@@ -69,7 +69,7 @@ public class MarketDataNormalizationService {
             return Optional.empty();
         }
         String assetCode = trim(dto.meta().assetCode());
-        String timeframe = trim(dto.timeframe());
+        String timeframe = canonicalTimeframe(dto.timeframe());
         if (assetCode == null || timeframe == null || dto.barTimeUtc() == null) {
             return Optional.empty();
         }
@@ -118,5 +118,24 @@ public class MarketDataNormalizationService {
             return null;
         }
         return value.trim();
+    }
+
+    private String canonicalTimeframe(String raw) {
+        String value = trim(raw);
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.toLowerCase();
+        if ("1m".equals(normalized) || "m1".equals(normalized) || "min".equals(normalized)) {
+            return "1m";
+        }
+        if ("1h".equals(normalized) || "h1".equals(normalized) || "60m".equals(normalized) || "60".equals(normalized)) {
+            return "H1";
+        }
+        if ("d1".equals(normalized) || "1d".equals(normalized) || "day".equals(normalized)
+                || "daily".equals(normalized) || "1440m".equals(normalized) || "1440".equals(normalized)) {
+            return "D1";
+        }
+        return value.toUpperCase();
     }
 }

@@ -6,6 +6,7 @@ import com.wangbyul.gnd.core.domain.SignalActionType;
 import com.wangbyul.gnd.core.domain.TradingSignalEntity;
 import com.wangbyul.gnd.core.domain.UniverseLayerType;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Service;
@@ -28,8 +29,16 @@ public class ScalpStrategyService extends AbstractSignalPanelStrategyService {
         BigDecimal score = clamp01(scale(signal.getScalpSignalScore()).add(BigDecimal.valueOf(0.5d)));
         Map<String, Object> breakdown = parseJsonMap(signal.getProbabilityReasonBreakdownJson());
         String dataState = textField(breakdown, "data_state");
+        String analysisState = textField(breakdown, "analysis_state");
+        int mappedNewsCount = intField(breakdown, "mapped_news_count");
+        int eligibleNewsCount = intField(breakdown, "eligible_news_count");
+        BigDecimal newsConfidence = decimalField(breakdown, "news_confidence");
+        BigDecimal good = scale(signal.getGoodNewsProbability());
+        BigDecimal bad = scale(signal.getBadNewsProbability());
         boolean blocked = isBlocked(signal);
-        boolean qualityDegraded = isTradeDisabled(asset) || isQuoteStale(asset)
+        boolean tradeDisabled = isTradeDisabled(asset);
+        boolean quoteStale = isQuoteStale(asset);
+        boolean qualityDegraded = tradeDisabled || quoteStale
                 || "NO_MATCHED_NEWS".equals(dataState) || "INSUFFICIENT_DATA".equals(dataState);
 
         String badge;
@@ -37,19 +46,29 @@ public class ScalpStrategyService extends AbstractSignalPanelStrategyService {
         String recommendationState;
         if (blocked) {
             badge = "차단";
-            reason = "리스크 정책 또는 시간정렬 검증으로 차단";
+            reason = "차단사유=" + safeString(signal.getBlockedReason(), "RISK_POLICY")
+                    + " · 단타점수 " + scale(signal.getScalpSignalScore())
+                    + " · 결합 " + scale(signal.getCombinedConfidence());
             recommendationState = "BLOCKED";
         } else if ("NO_MATCHED_NEWS".equals(dataState) || "INSUFFICIENT_DATA".equals(dataState)) {
             badge = "데이터부족";
-            reason = "뉴스-종목 매핑/유효 표본 부족으로 보류";
+            reason = "매핑 " + mappedNewsCount + "건 / 유효 " + eligibleNewsCount + "건 · "
+                    + safeString(dataState, "INSUFFICIENT_DATA")
+                    + (!safeString(analysisState, "").isBlank() ? (" · " + analysisState) : "");
             recommendationState = "DATA_GAP";
         } else if (signal.getAction() == SignalActionType.BUY_CANDIDATE || signal.getAction() == SignalActionType.SELL_CANDIDATE) {
             badge = qualityDegraded ? "품질주의" : "추천";
-            reason = qualityDegraded ? "추천 가능하나 시세/유니버스 품질 저하 주의" : "단기 뉴스 이벤트 대응 후보";
+            reason = "호/악 " + good + "/" + bad
+                    + " · 뉴스신뢰 " + scale(newsConfidence)
+                    + " · 결합 " + scale(signal.getCombinedConfidence())
+                    + qualityHint(tradeDisabled, quoteStale);
             recommendationState = qualityDegraded ? "WARN" : "RECOMMEND";
         } else {
             badge = qualityDegraded ? "품질주의" : "관찰";
-            reason = "단기 이벤트 모니터링 중심";
+            reason = "단타점수 " + scale(signal.getScalpSignalScore())
+                    + " · 호/악 " + good + "/" + bad
+                    + " · 결합 " + scale(signal.getCombinedConfidence())
+                    + qualityHint(tradeDisabled, quoteStale);
             recommendationState = qualityDegraded ? "WARN" : "WATCH_ONLY";
         }
 
@@ -68,6 +87,64 @@ public class ScalpStrategyService extends AbstractSignalPanelStrategyService {
                 recommendationState,
                 qualityDegraded,
                 "scalp_score>combined_confidence>generated_at");
+    }
+
+    private int intField(Map<String, Object> map, String key) {
+        if (map == null || key == null) {
+            return 0;
+        }
+        Object value = map.get(key);
+        if (value instanceof Number n) {
+            return Math.max(0, n.intValue());
+        }
+        if (value == null) {
+            return 0;
+        }
+        try {
+            return Math.max(0, Integer.parseInt(String.valueOf(value).trim()));
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private BigDecimal decimalField(Map<String, Object> map, String key) {
+        if (map == null || key == null) {
+            return BigDecimal.ZERO;
+        }
+        Object value = map.get(key);
+        if (value == null) {
+            return BigDecimal.ZERO;
+        }
+        try {
+            return new BigDecimal(String.valueOf(value)).setScale(4, RoundingMode.HALF_UP);
+        } catch (Exception ignored) {
+            return BigDecimal.ZERO;
+        }
+    }
+
+    private String qualityHint(boolean tradeDisabled, boolean quoteStale) {
+        if (!tradeDisabled && !quoteStale) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(" · 품질경고(");
+        if (tradeDisabled) {
+            sb.append("거래비활성");
+        }
+        if (tradeDisabled && quoteStale) {
+            sb.append(",");
+        }
+        if (quoteStale) {
+            sb.append("시세지연");
+        }
+        sb.append(")");
+        return sb.toString();
+    }
+
+    private String safeString(String value, String fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        return value.trim();
     }
 
     @Override

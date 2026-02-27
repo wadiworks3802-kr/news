@@ -6,6 +6,7 @@ import com.wangbyul.gnd.core.domain.SignalActionType;
 import com.wangbyul.gnd.core.domain.TradingSignalEntity;
 import com.wangbyul.gnd.core.domain.UniverseLayerType;
 import java.math.BigDecimal;
+import java.util.Locale;
 import java.util.List;
 import org.springframework.stereotype.Service;
 
@@ -26,23 +27,31 @@ public class SwingStrategyService extends AbstractSignalPanelStrategyService {
     public PanelStrategyEvaluation evaluate(TradingSignalEntity signal, AssetUniverseEntity asset) {
         BigDecimal score = clamp01(scale(signal.getSwingSignalScore()).add(BigDecimal.valueOf(0.5d)));
         boolean blocked = isBlocked(signal);
-        boolean qualityDegraded = isTradeDisabled(asset) || isQuoteStale(asset)
+        boolean tradeDisabled = isTradeDisabled(asset);
+        boolean quoteStale = isQuoteStale(asset);
+        boolean qualityDegraded = tradeDisabled || quoteStale
                 || clamp01(scale(signal.getCombinedConfidence())).compareTo(BigDecimal.valueOf(0.35d)) < 0;
+        String regime = signal.getMarketRegime() == null ? "MIXED" : signal.getMarketRegime().name().toUpperCase(Locale.ROOT);
+        BigDecimal swing = scale(signal.getSwingSignalScore());
+        BigDecimal weekly = scale(signal.getWeeklyContextScore());
+        BigDecimal combined = scale(signal.getCombinedConfidence());
 
         String badge;
         String reason;
         String recommendationState;
         if (blocked) {
             badge = "차단";
-            reason = "리스크 정책 차단";
+            reason = "차단사유=" + safeString(signal.getBlockedReason(), "RISK_POLICY")
+                    + " · 스윙 " + swing
+                    + " · 결합 " + combined;
             recommendationState = "BLOCKED";
         } else if (signal.getAction() == SignalActionType.BUY_CANDIDATE || signal.getAction() == SignalActionType.SELL_CANDIDATE) {
             badge = qualityDegraded ? "품질주의" : "추천";
-            reason = "추세/주간 컨텍스트 기반 중기 후보";
+            reason = "스윙 " + swing + " · 주간 " + weekly + " · 레짐 " + regime + " · 결합 " + combined + qualityHint(tradeDisabled, quoteStale);
             recommendationState = qualityDegraded ? "WARN" : "RECOMMEND";
         } else {
             badge = qualityDegraded ? "품질주의" : "관찰";
-            reason = "중기 추세 정렬 대기";
+            reason = "스윙 " + swing + " · 주간 " + weekly + " · 레짐 " + regime + " · 추세 정렬 대기" + qualityHint(tradeDisabled, quoteStale);
             recommendationState = qualityDegraded ? "WARN" : "WATCH_ONLY";
         }
 
@@ -58,6 +67,31 @@ public class SwingStrategyService extends AbstractSignalPanelStrategyService {
                 recommendationState,
                 qualityDegraded,
                 "swing_score>weekly_context>combined_confidence");
+    }
+
+    private String qualityHint(boolean tradeDisabled, boolean quoteStale) {
+        if (!tradeDisabled && !quoteStale) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(" · 품질경고(");
+        if (tradeDisabled) {
+            sb.append("거래비활성");
+        }
+        if (tradeDisabled && quoteStale) {
+            sb.append(",");
+        }
+        if (quoteStale) {
+            sb.append("시세지연");
+        }
+        sb.append(")");
+        return sb.toString();
+    }
+
+    private String safeString(String value, String fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        return value.trim();
     }
 
     @Override

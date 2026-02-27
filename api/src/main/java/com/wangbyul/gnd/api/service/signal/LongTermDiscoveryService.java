@@ -41,7 +41,7 @@ public class LongTermDiscoveryService {
     public DiscoveryResult analyze(AssetUniverseEntity asset) {
         OffsetDateTime since = OffsetDateTime.now().minusMonths(6);
         List<NewsEntity> recentNews = newsRepository.findTop500ByCountryAndPubUtcAfterOrderByPubUtcDesc(asset.getCountry(), since);
-        List<MarketPriceBarEntity> bars = marketPriceBarRepository.findTop240ByAssetCodeAndTimeframeOrderByBarTimeDesc(asset.getAssetCode(), "D1");
+        List<MarketPriceBarEntity> bars = resolveBars(asset.getAssetCode(), "D1", "d1", "1d", "H1", "1h", "1m");
 
         int recentMentions = countMentions(recentNews, asset, 30);
         int previousMentions = countMentions(recentNews, asset, 60) - recentMentions;
@@ -165,5 +165,19 @@ public class LongTermDiscoveryService {
                 .replaceAll("&[a-zA-Z#0-9]+;", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
+    }
+
+    private List<MarketPriceBarEntity> resolveBars(String assetCode, String... timeframes) {
+        for (String timeframe : timeframes) {
+            if (timeframe == null || timeframe.isBlank()) {
+                continue;
+            }
+            List<MarketPriceBarEntity> rows = marketPriceBarRepository
+                    .findTop240ByAssetCodeAndTimeframeOrderByBarTimeDesc(assetCode, timeframe);
+            if (rows != null && !rows.isEmpty()) {
+                return rows;
+            }
+        }
+        return List.of();
     }
 }

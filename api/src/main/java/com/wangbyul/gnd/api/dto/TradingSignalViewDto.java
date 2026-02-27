@@ -162,6 +162,23 @@ public class TradingSignalViewDto {
     @JsonProperty("sort_basis")
     private String sortBasis;
 
+    @JsonProperty("last_price")
+    private BigDecimal lastPrice;
+
+    @JsonProperty("change_pct")
+    private BigDecimal changePct;
+
+    private BigDecimal volume;
+
+    @JsonProperty("quote_time_utc")
+    private OffsetDateTime quoteTimeUtc;
+
+    @JsonProperty("quote_age_seconds")
+    private Long quoteAgeSeconds;
+
+    @JsonProperty("quote_provider")
+    private String quoteProvider;
+
     @JsonProperty("generated_at")
     private OffsetDateTime generatedAt;
 }

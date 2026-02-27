@@ -36,9 +36,7 @@ public class MarketTrendSignalService {
     }
 
     public MarketTrendSignalResult analyze(AssetUniverseEntity asset) {
-        List<MarketPriceBarEntity> bars = marketPriceBarRepository.findTop240ByAssetCodeAndTimeframeOrderByBarTimeDesc(
-                asset.getAssetCode(),
-                "D1");
+        List<MarketPriceBarEntity> bars = resolveBars(asset.getAssetCode(), "D1", "d1", "1d", "H1", "1h", "1m");
 
         BigDecimal swingScore = computeSwingScore(bars);
         BigDecimal themeStrength = computeThemeStrength(asset);
@@ -117,5 +115,18 @@ public class MarketTrendSignalService {
         }
         return sum.divide(BigDecimal.valueOf(safeCount), 6, RoundingMode.HALF_UP);
     }
-}
 
+    private List<MarketPriceBarEntity> resolveBars(String assetCode, String... timeframes) {
+        for (String timeframe : timeframes) {
+            if (timeframe == null || timeframe.isBlank()) {
+                continue;
+            }
+            List<MarketPriceBarEntity> rows = marketPriceBarRepository
+                    .findTop240ByAssetCodeAndTimeframeOrderByBarTimeDesc(assetCode, timeframe);
+            if (rows != null && !rows.isEmpty()) {
+                return rows;
+            }
+        }
+        return List.of();
+    }
+}

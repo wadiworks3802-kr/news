@@ -45,9 +45,8 @@ public class ChartPositionStrategyService {
     }
 
     public ChartPositionResult analyze(AssetUniverseEntity asset, BigDecimal badNewsProbability) {
-        List<MarketPriceBarEntity> bars = marketPriceBarRepository.findTop240ByAssetCodeAndTimeframeOrderByBarTimeDesc(
-                asset.getAssetCode(),
-                "D1");
+        ResolvedBars resolvedBars = resolveBars(asset.getAssetCode());
+        List<MarketPriceBarEntity> bars = resolvedBars.rows();
 
         int atrPeriod = Math.max(5, signalPolicyProperties.getChartAtrPeriod());
         int volumeAvgBars = Math.max(5, signalPolicyProperties.getChartVolumeAverageBars());
@@ -71,7 +70,7 @@ public class ChartPositionStrategyService {
                     BigDecimal.ZERO,
                     "차트 데이터 부족",
                     "bar-data-insufficient",
-                    "{\"reason\":\"insufficient-bar-data\"}");
+                    "{\"reason\":\"insufficient-bar-data\",\"timeframe\":\"" + resolvedBars.timeframe() + "\"}");
         }
 
         BigDecimal close = bars.get(0).getClosePrice();
@@ -171,6 +170,7 @@ public class ChartPositionStrategyService {
         chartRuleHits.put("trend_breakdown_severe", trendBreakdownSevere);
         chartRuleHits.put("position_management_signal", positionSignal);
         chartRuleHits.put("chart_confidence", chartConfidence);
+        chartRuleHits.put("timeframe_used", resolvedBars.timeframe());
 
         return new ChartPositionResult(
                 positionSignal,
@@ -366,5 +366,34 @@ public class ChartPositionStrategyService {
         } catch (Exception ignored) {
             return "{}";
         }
+    }
+
+    private ResolvedBars resolveBars(String assetCode) {
+        List<String> candidates = List.of("D1", "d1", "1d", "H1", "1h", "1m");
+        for (String timeframe : candidates) {
+            List<MarketPriceBarEntity> rows = marketPriceBarRepository
+                    .findTop240ByAssetCodeAndTimeframeOrderByBarTimeDesc(assetCode, timeframe);
+            if (rows != null && !rows.isEmpty()) {
+                return new ResolvedBars(rows, normalizeTimeframe(timeframe));
+            }
+        }
+        return new ResolvedBars(List.of(), "NONE");
+    }
+
+    private String normalizeTimeframe(String timeframe) {
+        if (timeframe == null) {
+            return "NONE";
+        }
+        return switch (timeframe.toLowerCase()) {
+            case "1d", "d1" -> "D1";
+            case "1h", "h1" -> "H1";
+            case "1m", "m1" -> "1m";
+            default -> timeframe;
+        };
+    }
+
+    private record ResolvedBars(
+            List<MarketPriceBarEntity> rows,
+            String timeframe) {
     }
 }

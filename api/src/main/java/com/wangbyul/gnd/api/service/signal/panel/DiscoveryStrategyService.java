@@ -6,6 +6,7 @@ import com.wangbyul.gnd.core.domain.SignalActionType;
 import com.wangbyul.gnd.core.domain.TradingSignalEntity;
 import com.wangbyul.gnd.core.domain.UniverseLayerType;
 import java.math.BigDecimal;
+import java.util.Map;
 import java.util.List;
 import org.springframework.stereotype.Service;
 
@@ -26,22 +27,41 @@ public class DiscoveryStrategyService extends AbstractSignalPanelStrategyService
     public PanelStrategyEvaluation evaluate(TradingSignalEntity signal, AssetUniverseEntity asset) {
         BigDecimal score = clamp01(scale(signal.getDiscoveryScore()));
         boolean blocked = isBlocked(signal);
-        boolean qualityDegraded = isTradeDisabled(asset) || isQuoteStale(asset);
+        boolean tradeDisabled = isTradeDisabled(asset);
+        boolean quoteStale = isQuoteStale(asset);
+        boolean qualityDegraded = tradeDisabled || quoteStale;
+        Map<String, Object> reasonRoot = parseJsonMap(signal.getReasonJson());
+        Map<String, Object> discovery = nestedMap(reasonRoot, "discovery");
+        BigDecimal mentionGrowth = decimalField(discovery, "mention_growth");
+        BigDecimal trendTurn = decimalField(discovery, "trend_turn_score");
+        BigDecimal volumeShift = decimalField(discovery, "volume_shift_score");
+        BigDecimal discoveryScore = scale(signal.getDiscoveryScore());
+        BigDecimal combined = scale(signal.getCombinedConfidence());
 
         String badge;
         String reason;
         String recommendationState;
         if (blocked) {
             badge = "차단";
-            reason = "리스크 정책 차단";
+            reason = "차단사유=" + safeString(signal.getBlockedReason(), "RISK_POLICY")
+                    + " · 발굴점수 " + discoveryScore
+                    + " · 결합 " + combined;
             recommendationState = "BLOCKED";
         } else if (signal.getAction() == SignalActionType.BUY_CANDIDATE) {
             badge = qualityDegraded ? "품질주의" : "발굴";
-            reason = "장기/테마 선행 발굴 후보";
+            reason = "발굴점수 " + discoveryScore
+                    + " · 언급증가 " + mentionGrowth
+                    + " · 추세전환 " + trendTurn
+                    + " · 거래량변화 " + volumeShift
+                    + qualityHint(tradeDisabled, quoteStale);
             recommendationState = qualityDegraded ? "WARN" : "RECOMMEND";
         } else {
             badge = qualityDegraded ? "품질주의" : "탐색";
-            reason = "발굴 후보 스크리닝 결과";
+            reason = "발굴점수 " + discoveryScore
+                    + " · 결합 " + combined
+                    + " · 언급증가 " + mentionGrowth
+                    + " · 추세전환 " + trendTurn
+                    + qualityHint(tradeDisabled, quoteStale);
             recommendationState = qualityDegraded ? "WARN" : "WATCH_ONLY";
         }
 
@@ -57,6 +77,59 @@ public class DiscoveryStrategyService extends AbstractSignalPanelStrategyService
                 recommendationState,
                 qualityDegraded,
                 "discovery_score>diversity>selection_score");
+    }
+
+    private Map<String, Object> nestedMap(Map<String, Object> root, String key) {
+        if (root == null || key == null) {
+            return Map.of();
+        }
+        Object value = root.get(key);
+        if (value instanceof Map<?, ?> raw) {
+            java.util.LinkedHashMap<String, Object> out = new java.util.LinkedHashMap<>();
+            raw.forEach((k, v) -> out.put(String.valueOf(k), v));
+            return out;
+        }
+        return Map.of();
+    }
+
+    private BigDecimal decimalField(Map<String, Object> map, String key) {
+        if (map == null || key == null) {
+            return BigDecimal.ZERO;
+        }
+        Object value = map.get(key);
+        if (value == null) {
+            return BigDecimal.ZERO;
+        }
+        try {
+            return new BigDecimal(String.valueOf(value)).setScale(4, java.math.RoundingMode.HALF_UP);
+        } catch (Exception ignored) {
+            return BigDecimal.ZERO;
+        }
+    }
+
+    private String qualityHint(boolean tradeDisabled, boolean quoteStale) {
+        if (!tradeDisabled && !quoteStale) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(" · 품질경고(");
+        if (tradeDisabled) {
+            sb.append("거래비활성");
+        }
+        if (tradeDisabled && quoteStale) {
+            sb.append(",");
+        }
+        if (quoteStale) {
+            sb.append("시세지연");
+        }
+        sb.append(")");
+        return sb.toString();
+    }
+
+    private String safeString(String value, String fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        return value.trim();
     }
 
     @Override

@@ -22,6 +22,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -404,12 +405,12 @@ public class KiwoomRestMarketDataProvider implements MarketDataProvider {
     }
 
     private MarketQuoteDto toQuote(AssetUniverseEntity asset, Map<String, Object> raw) {
-        Map<String, Object> payload = payloadMap(raw);
-        BigDecimal last = num(payload, "cur_prc", "stk_prpr", "last_pric", "close_pric", "lastPrice");
+        Map<String, Object> payload = quotePayload(asset, raw);
+        BigDecimal last = price(payload, "cur_prc", "stk_prpr", "last_pric", "close_pric", "lastPrice", "last_price");
         if (last == null) {
             return null;
         }
-        OffsetDateTime quoteTime = dt(payload, "dt", "trd_dt", "cntr_tm");
+        OffsetDateTime quoteTime = dt(payload, "dt", "trd_dt", "cntr_tm", "regDay", "trde_date");
         if (quoteTime == null) {
             quoteTime = OffsetDateTime.now(UTC);
         }
@@ -418,12 +419,12 @@ public class KiwoomRestMarketDataProvider implements MarketDataProvider {
                 OffsetDateTime.now(UTC),
                 quoteTime,
                 last,
-                num(payload, "flu_rt", "pred_pre_rt", "change_rate", "pred_pre"),
-                num(payload, "bid_pric", "bidp1"),
-                num(payload, "ask_pric", "askp1"),
-                num(payload, "bid_qty", "bidp_rsqn1"),
-                num(payload, "ask_qty", "askp_rsqn1"),
-                num(payload, "trde_qty", "acml_vol", "volume", "accTrdeQty"),
+                num(payload, "flu_rt", "pred_pre_rt", "change_rate", "changeRate"),
+                price(payload, "bid_pric", "bidp1"),
+                price(payload, "ask_pric", "askp1"),
+                amount(payload, "bid_qty", "bidp_rsqn1"),
+                amount(payload, "ask_qty", "askp_rsqn1"),
+                amount(payload, "trde_qty", "acml_vol", "volume", "accTrdeQty"),
                 providerId());
     }
 
@@ -432,16 +433,21 @@ public class KiwoomRestMarketDataProvider implements MarketDataProvider {
         if (payload.isEmpty()) {
             return List.of();
         }
-        String tf = blank(timeframe) ? "1m" : timeframe.trim().toLowerCase(Locale.ROOT);
+        String tf = normalizeTimeframe(timeframe);
         List<MarketPriceBarDto> rows = new ArrayList<>();
         for (Map<String, Object> row : payload) {
             OffsetDateTime barTime = dt(row, "cntr_tm", "dt", "base_dt", "stck_bsop_date", "datetime");
-            BigDecimal open = num(row, "open_pric", "stck_oprc", "open");
-            BigDecimal high = num(row, "high_pric", "stck_hgpr", "high");
-            BigDecimal low = num(row, "low_pric", "stck_lwpr", "low");
-            BigDecimal close = num(row, "cur_prc", "close_pric", "stck_prpr", "close");
+            BigDecimal open = price(row, "open_pric", "stck_oprc", "open");
+            BigDecimal high = price(row, "high_pric", "stck_hgpr", "high");
+            BigDecimal low = price(row, "low_pric", "stck_lwpr", "low");
+            BigDecimal close = price(row, "cur_prc", "close_pric", "stck_prpr", "close");
             if (barTime == null || open == null || high == null || low == null || close == null) {
                 continue;
+            }
+            if (high.compareTo(low) < 0) {
+                BigDecimal temp = high;
+                high = low;
+                low = temp;
             }
             rows.add(new MarketPriceBarDto(
                     assetMeta(asset),
@@ -451,13 +457,63 @@ public class KiwoomRestMarketDataProvider implements MarketDataProvider {
                     high,
                     low,
                     close,
-                    zeroIfNull(num(row, "trde_qty", "acml_vol", "cntg_vol", "volume")),
+                    zeroIfNull(amount(row, "trde_qty", "acml_vol", "cntg_vol", "volume")),
                     providerId()));
             if (rows.size() >= limit) {
                 break;
             }
         }
         return rows;
+    }
+
+    private Map<String, Object> quotePayload(AssetUniverseEntity asset, Map<String, Object> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return Map.of();
+        }
+        String targetCode = toKiwoomCode(asset == null ? null : asset.getAssetCode());
+        for (String key : List.of("list", "output", "output1", "atn_stk_infr", "stk_infr", "data")) {
+            Object candidate = raw.get(key);
+            if (!(candidate instanceof List<?> list) || list.isEmpty()) {
+                continue;
+            }
+            Map<String, Object> matched = findQuoteRowByCode(list, targetCode);
+            if (matched != null && !matched.isEmpty()) {
+                return matched;
+            }
+        }
+        return payloadMap(raw);
+    }
+
+    private Map<String, Object> findQuoteRowByCode(List<?> rows, String targetCode) {
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> first = null;
+        for (Object row : rows) {
+            if (!(row instanceof Map<?, ?> map)) {
+                continue;
+            }
+            Map<String, Object> normalized = toStringMap(map);
+            if (first == null) {
+                first = normalized;
+            }
+            if (blank(targetCode)) {
+                continue;
+            }
+            String rowCode = firstNonBlank(
+                    str(normalized.get("stk_cd")),
+                    str(normalized.get("code")),
+                    str(normalized.get("item_cd")),
+                    str(normalized.get("stck_shrn_iscd")),
+                    str(normalized.get("isu_cd")));
+            if (blank(rowCode)) {
+                continue;
+            }
+            if (toKiwoomCode(rowCode).equals(targetCode)) {
+                return normalized;
+            }
+        }
+        return first;
     }
 
     private List<AssetUniverseEntity> kiwoomTargets(List<AssetUniverseEntity> assets) {
@@ -474,6 +530,9 @@ public class KiwoomRestMarketDataProvider implements MarketDataProvider {
             return clampInterval(props.getChartDefaultIntervalMinutes());
         }
         String normalized = timeframe.trim().toLowerCase(Locale.ROOT);
+        if ("1d".equals(normalized) || "d1".equals(normalized) || "day".equals(normalized) || "daily".equals(normalized)) {
+            return 1440;
+        }
         if ("1h".equals(normalized) || "h1".equals(normalized)) {
             return 60;
         }
@@ -489,6 +548,23 @@ public class KiwoomRestMarketDataProvider implements MarketDataProvider {
 
     private int clampInterval(int value) {
         return Math.max(1, Math.min(value, 240));
+    }
+
+    private String normalizeTimeframe(String timeframe) {
+        if (blank(timeframe)) {
+            return "1m";
+        }
+        String normalized = timeframe.trim().toLowerCase(Locale.ROOT);
+        if ("1d".equals(normalized) || "d1".equals(normalized) || "day".equals(normalized) || "daily".equals(normalized)) {
+            return "D1";
+        }
+        if ("1h".equals(normalized) || "h1".equals(normalized) || "60m".equals(normalized)) {
+            return "H1";
+        }
+        if ("1m".equals(normalized) || "m1".equals(normalized)) {
+            return "1m";
+        }
+        return normalized;
     }
 
     private String toKiwoomCode(String assetCode) {
@@ -630,6 +706,16 @@ public class KiwoomRestMarketDataProvider implements MarketDataProvider {
         return null;
     }
 
+    private BigDecimal price(Map<String, Object> map, String... keys) {
+        BigDecimal value = num(map, keys);
+        return value == null ? null : value.abs();
+    }
+
+    private BigDecimal amount(Map<String, Object> map, String... keys) {
+        BigDecimal value = num(map, keys);
+        return value == null ? null : value.max(BigDecimal.ZERO);
+    }
+
     private OffsetDateTime dt(Map<String, Object> map, String... keys) {
         if (map == null || keys == null) {
             return null;
@@ -648,7 +734,7 @@ public class KiwoomRestMarketDataProvider implements MarketDataProvider {
                     return LocalDate.parse(digits, YMD).atStartOfDay(KST).withZoneSameInstant(UTC).toOffsetDateTime();
                 }
                 if (digits.length() == 6) {
-                    LocalDateTime local = LocalDateTime.of(LocalDate.now(KST), LocalDateTime.parse(digits, HMS).toLocalTime());
+                    LocalDateTime local = LocalDateTime.of(LocalDate.now(KST), LocalTime.parse(digits, HMS));
                     return local.atZone(KST).withZoneSameInstant(UTC).toOffsetDateTime();
                 }
             } catch (Exception ignored) {
